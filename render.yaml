@@ -9,8 +9,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: "8080"
       - key: FRONTEND_URL
         value: "*"
       - key: TEMP_DIR

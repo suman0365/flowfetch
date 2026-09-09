@@ -47,6 +47,7 @@ progressRouter.get("/progress/:jobId", validateJobIdParam(), (req, res, next) =>
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  const jobId = job.id;
   send(toPayload(job));
 
   const listener = (updatedJob: DownloadJob) => {
@@ -56,13 +57,13 @@ progressRouter.get("/progress/:jobId", validateJobIdParam(), (req, res, next) =>
     }
   };
 
-  jobEvents.on(job.id, listener);
+  jobEvents.on(jobId, listener);
 
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 15000);
 
   function cleanup() {
     clearInterval(heartbeat);
-    jobEvents.off(job.id, listener);
+    jobEvents.off(jobId, listener);
     res.end();
   }
 
