@@ -1,0 +1,17 @@
+# Render.com Blueprint — auto-configures the service on deploy
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: flowfetch
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "8080"
+      - key: FRONTEND_URL
+        value: "*"
+      - key: TEMP_DIR
+        value: /app/temp

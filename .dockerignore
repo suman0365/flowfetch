@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (rebuilt inside the container)
+node_modules
+backend/node_modules
+frontend/node_modules
+
+# Build outputs (rebuilt inside the container)
+backend/dist
+frontend/dist
+
+# Temp download storage
+backend/temp/jobs/*
+backend/temp/files/*
+
+# Development & test files
+*.md
+LICENSE
+test*.html
+test*.mjs
+test*.js
+temp/
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Environment (baked in at build or set via Cloud Run)
+.env
+.env.local
+.env.production
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Deployment scripts (not needed in the image)
+deploy.sh
+cloudbuild.yaml
