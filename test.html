@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<body>
+<button id="btn">Download</button>
+<script>
+document.getElementById('btn').onclick = async () => {
+  await new Promise(r => setTimeout(r, 100)); // simulate fetch
+  const a = document.createElement("a");
+  a.href = "http://localhost:3000/api/analyze"; // just any url
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  console.log("clicked");
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h1>Testing SSE click</h1>
+  <button id="start">Start SSE</button>
+  <script>
+    document.getElementById('start').onclick = () => {
+      // simulate SSE delay
+      setTimeout(() => {
+        const a = document.createElement("a");
+        a.href = "data:text/plain;charset=utf-8,hello";
+        a.download = "test.txt";
+        document.body.appendChild(a);
+        
+        try {
+          a.click();
+          console.log("Clicked successfully");
+          document.body.innerHTML += "<p>Clicked successfully</p>";
+        } catch (e) {
+          console.log("Error:", e);
+        }
+        a.remove();
+      }, 5000);
+    };
+  </script>
+</body>
+</html>

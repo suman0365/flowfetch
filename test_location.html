@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h1>Testing async location</h1>
+  <button id='btn'>Start Async Location</button>
+  <script>
+    document.getElementById('btn').onclick = () => {
+      let i = 0;
+      const timer = setInterval(() => {
+        i++;
+        console.log('Polling...', i);
+        if (i === 3) {
+          clearInterval(timer);
+          try {
+            window.location.assign('data:text/plain;charset=utf-8,hello_from_location');
+            console.log('Async location fired');
+          } catch (e) {
+            console.log('Blocked', e);
+          }
+        }
+      }, 1000);
+    };
+  </script>
+</body>
+</html>

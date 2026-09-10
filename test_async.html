@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <h1>Testing async download</h1>
+  <button id='btn'>Start Async Download</button>
+  <script>
+    document.getElementById('btn').onclick = () => {
+      let i = 0;
+      const timer = setInterval(() => {
+        i++;
+        console.log('Polling...', i);
+        if (i === 3) {
+          clearInterval(timer);
+          const a = document.createElement('a');
+          a.href = 'data:text/plain;charset=utf-8,hello';
+          a.download = 'test.txt';
+          document.body.appendChild(a);
+          try {
+            a.click();
+            console.log('Async click fired');
+          } catch (e) {
+            console.log('Blocked', e);
+          }
+          a.remove();
+        }
+      }, 1000);
+    };
+  </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: flowfetch-1
+    runtime: node
+    rootDir: backend
+    buildCommand: bash build.sh
+    startCommand: node dist/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        value: https://flowfetch.vercel.app
+      - key: TEMP_DIR
+        value: /tmp/flowfetch
+      - key: PORT
+        value: 10000
