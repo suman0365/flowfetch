@@ -94,8 +94,14 @@ class DownloaderService extends EventEmitter {
   createJob(url: string, format: NormalizedFormat, title: string = 'video'): { id: string; streamMode: StreamMode } {
     const id = randomUUID();
     let streamMode: StreamMode = 'direct';
+      // Disk-buffered (process_first): yt-dlp downloads BOTH streams to disk first,
+    // then FFmpeg merges them, so a live stream sends NO bytes for 1-3 minutes
+    // while the download runs - proxies and clients time the idle connection out
+    // and the download dies with 0 bytes (seen 2026-11-20 on the Tea video).
+    // Buffering to disk first means the browser downloads a finished file with
+    // Content-Length + Range support instead.
     if (format.type === 'video+audio' && format.videoFormatId && format.audioFormatId) {
-      streamMode = 'process_and_stream';
+      streamMode = 'process_first';
     }
     this.jobs.set(id, {
       id,
@@ -284,6 +290,8 @@ class DownloaderService extends EventEmitter {
     }
   }
 
+  // Disk download: now used for all video+audio merged formats (see createJob, streamMode 'process_first'), not just as a fallback.
+  // yt-dlp + FFmpeg finish the merged file on disk first; the browser then downloads the finished file with Content-Length + Range support instead of a live stream.
   startDiskDownload(id: string): void {
     const job = this.jobs.get(id);
     if (!job) return;
