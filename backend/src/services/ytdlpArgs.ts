@@ -4,7 +4,6 @@ import path from 'path';
 
 /**
  * YouTube bot-check workaround.
- *
  * YouTube blocks yt-dlp from datacenter IPs (Render, etc.) when it uses the
  * default web player client: "Sign in to confirm you're not a bot".
  * The Android / TV-embedded player clients are served by a different
@@ -12,12 +11,10 @@ import path from 'path';
  * them first for youtube.com / youtu.be URLs, then fall back to web.
  * Non-YouTube sites are untouched (single attempt, no extractor args).
  */
-
 export interface YtAttempt {
   name: string;
   extractorArgs?: string;
 }
-
 export const YOUTUBE_ATTEMPTS: YtAttempt[] = [
   // Default first: full formats (up to 4K) when the IP is not blocked.
   { name: 'default', extractorArgs: undefined },
@@ -40,13 +37,10 @@ export function isYouTubeUrl(url: string): boolean {
     return false;
   }
 }
-
 export function attemptsFor(url: string): YtAttempt[] {
   return isYouTubeUrl(url) ? YOUTUBE_ATTEMPTS : [{ name: 'default', extractorArgs: undefined }];
 }
-
 let cachedCookiesPath: string | null = null;
-
 /**
  * Optional cookies support, for when even the alternate clients are
  * challenged. Set one of these Render env vars (never commit cookies):
@@ -63,24 +57,23 @@ export function cookiesArgs(): string[] {
   const content = b64 ? Buffer.from(b64, 'base64').toString('utf-8') : raw;
   if (!content) return [];
   if (!cachedCookiesPath) {
-    const p = path.join(os.tmpdir(), 'flowfetch-cookies.txt');
-    fs.writeFileSync(p, content, { mode: 0o600 });
-    cachedCookiesPath = p;
+    cachedCookiesPath = path.join(os.tmpdir(), `flowfetch-cookies-${process.pid}.txt`);
+    fs.writeFileSync(cachedCookiesPath, content, { mode: 0o600 });
   }
   return ['--cookies', cachedCookiesPath];
 }
-
-/** Common yt-dlp flags shared by metadata and download calls. */
-export function baseArgs(attempt: YtAttempt): string[] {
-  // Use Node as the JS runtime: Node is already in the Docker image, while
-  // yt-dlp defaults to Deno only, which is not installed, so it cannot
-  // solve YouTube's JavaScript challenge without this flag.
-  const args: string[] = ['--no-playlist', '--no-warnings', '--socket-timeout', '20', '--js-runtimes', 'node'];
+export function baseArgs(url: string, attempt: YtAttempt): string[] {
+  // Deno is now installed in the Docker image and is yt-dlp's default
+  // JavaScript runtime, so prefer it for solving YouTube's JavaScript
+  // challenges; Node is the fallback.
+  const args: string[] = ['--no-playlist', '--no-warnings', '--socket-timeout', '20', '--js-runtimes', 'deno,node'];
   if (attempt.extractorArgs) args.push('--extractor-args', attempt.extractorArgs);
-  args.push(...cookiesArgs());
+  if (isYouTubeUrl(url)) args.push(...cookiesArgs());
   return args;
 }
-
-export function looksLikeBotBlock(stderr: string): boolean {
-  return /not a bot|Sign in to confirm|cookies-from-browser|HTTP Error 403/i.test(stderr);
+export function analyzeArgs(url: string, attempt: YtAttempt): string[] {
+  return [...baseArgs(url, attempt), '--dump-json', '--skip-download', '--no-download', '--format', 'best', url];
+}
+export function downloadArgs(url: string, attempt: YtAttempt, outputPath: string): string[] {
+  return [...baseArgs(url, attempt), '--output', outputPath];
 }
