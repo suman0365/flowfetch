@@ -69,7 +69,11 @@ export default function App() {
       setMetadata(data);
       window.history.pushState({ page: 'results', metadata: data }, "", "#results");
     } catch (err) {
-      showError(err instanceof Error ? err.message : 'Analysis failed');
+            const raw = err instanceof Error ? err.message : 'Analysis failed';       
+      const friendly = /not a bot|Sign in to confirm|Failed to extract any player response|EXTRACTION_BLOCKED/i.test(raw)         
+          ? 'YouTube blocked this video from our server (bot check). Try a non-YouTube public link, or try this link again later.'         
+          : raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;       
+      showError(friendly);
     } finally {
       setIsLoading(false);
     }
@@ -119,7 +123,9 @@ export default function App() {
   return (
     <div className="app">
       <Header onLogoClick={handleReset} />
-      <main className="main-content container mt-12 mb-16">
+      <main className="main-content container mt-12 mb-16"> 
+        {toastMsg && (<div className="bg-success/15 text-success border border-success/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{toastMsg}</div>)} 
+        {errorMsg && (<div className="bg-red-500/15 text-red-400 border border-red-500/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{errorMsg}</div>)}
         {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} />)}
         {pendingAdultUrl && !metadata && (
           <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
@@ -134,8 +140,6 @@ export default function App() {
         )}
         {metadata && (
           <div className="analysis-results">
-            {toastMsg && (<div className="bg-success/15 text-success border border-success/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{toastMsg}</div>)}
-            {errorMsg && (<div className="bg-red-500/15 text-red-400 border border-red-500/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{errorMsg}</div>)}
             {metadata.age_limit && metadata.age_limit >= 18 && !ageConfirmed ? (
               <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
                 <h2 className="text-2xl font-bold mb-4">Age Confirmation Required</h2>
