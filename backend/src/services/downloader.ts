@@ -76,8 +76,8 @@ function contentTypeFor(ext: string): string {
 }
 
 function sanitizeFilename(name: string): string {
-  // Replace illegal Windows and Unix path characters
-  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
+  // Replace illegal Windows and Unix path characters. Node rejects non-Latin1 header bytes, so a Tamil/emoji title in Content-Disposition threw ERR_INVALID_CHAR and crashed the server on download (verified with the Tea video title); strip non-ASCII so the plain filename is ASCII-only.
+  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim() || 'video';
 }
 
 // --------------------------------------------------------------------------
@@ -221,9 +221,9 @@ class DownloaderService extends EventEmitter {
     const { format } = job;
     const safeTitle = sanitizeFilename(job.title);
     const resolutionSuffix = format.resolution ? ` - ${format.resolution}` : '';
-    const safeFilename = `${safeTitle}${resolutionSuffix}.${format.ext}`;
+    const safeFilename = `${safeTitle}${resolutionSuffix}.${format.ext}`; const fullFilename = `${job.title.replace(/[<>:\"/\|?*\x00-\x1F]/g, '').trim() || 'video'}${resolutionSuffix}.${format.ext}`;
     res.setHeader('Content-Type', contentTypeFor(format.ext));
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(fullFilename)}`);
     res.setHeader('Cache-Control', 'no-store');
     if (format.filesize && format.filesize > 0) {
       res.setHeader('Content-Length', format.filesize);
