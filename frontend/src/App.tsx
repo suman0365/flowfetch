@@ -226,7 +226,7 @@ export default function App() {
   return (
     <div className="app">
       <Header onLogoClick={handleReset} />
-      <main className="main-content container mt-12 mb-16"> 
+      <main className="main-content container mb-16"> 
         {toastMsg && (<div className="toast-ok">{toastMsg}</div>)}
         {errorMsg && (<div className="toast-err">{errorMsg}</div>)}
         {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} analyzeProgress={analyzeProgress} analyzeStage={analyzeStage} />)}
