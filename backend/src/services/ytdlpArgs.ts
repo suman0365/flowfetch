@@ -81,9 +81,28 @@ export function baseArgs(attempt: YtAttempt, url?: string): string[] {
   if (url) args.push(...proxyArgs(url));
   return args;
 }
-// Proxy for YouTube only, set by start.sh when WARP is healthy or by a paid residential proxy via YT_PROXY env var; non-YouTube sites go direct; never log this value as it can contain credentials.
+/**
+ * Proxy for YouTube and archive.org, set by start.sh when the Cloudflare
+ * WARP userspace proxy (wireproxy) is healthy, or by a paid residential
+ * proxy via the YT_PROXY env var. Other sites go direct, so proxy
+ * bandwidth is not wasted on sites that already work. Archive.org is
+ * included because it refuses Render's direct egress outright
+ * (Errno 111 Connection refused, verified 2026-11-21) — a datacenter-IP
+ * block, same class of problem as YouTube's bot check.
+ * Never log this value: it can contain proxy credentials.
+ */
+export function isProxiedUrl(url: string): boolean {
+  if (isYouTubeUrl(url)) return true;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'archive.org' || host.endsWith('.archive.org');
+  } catch {
+    return false;
+  }
+}
+
 export function proxyArgs(url: string): string[] {
-    if (!isYouTubeUrl(url)) return [];
+    if (!isProxiedUrl(url)) return [];
     const proxy = process.env.YT_PROXY;
     if (!proxy) return [];
     return ['--proxy', proxy];
