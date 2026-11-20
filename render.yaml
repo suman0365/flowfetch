@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: flowfetch-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: TEMP_DIR
+        value: /tmp/flowfetch-temp
+      - key: MAX_FILE_SIZE
+        value: 2147483648
+      - key: DOWNLOAD_TIMEOUT
+        value: 3600000
+      - key: FRONTEND_URL
+        value: https://flowfetch.vercel.app
