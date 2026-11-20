@@ -24,7 +24,8 @@ export default function App() {
   const prefetchingFormatRef = useRef<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = (msg: string, durationMs = 5000) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), durationMs); };
-  const showError = (msg: string) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), 8000); };
+  // No auto-clear: the 8-second timeout made failures look silent again. Cleared by the next Analyze / Reset, which already set errorMsg to null.
+  const showError = (msg: string) => { setErrorMsg(msg);  };
   useEffect(() => {
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
