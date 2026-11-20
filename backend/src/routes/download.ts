@@ -30,9 +30,11 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/status/:jobId', (req: Request, res: Response) => {
   const job = downloader.getJob(req.params.jobId as string);
   if (!job) return res.json({ status: 'failed' });
-  if (job.progress.status === 'complete' && job.progress.filename) { return res.json({ status: 'ready', filename: job.progress.filename }); }
-  if (job.progress.status === 'failed') { return res.json({ status: 'failed' }); }
-  return res.json({ status: 'processing' });
+    const p = job.progress;
+    const progress = { percent: p.percent || 0, downloaded: p.downloaded || '0', total: p.total || '0', speed: p.speed || '0', eta: p.eta || 'Unknown' };
+  if (job.progress.status === 'complete' && job.progress.filename) { return res.json({ status: 'ready', filename: job.progress.filename, ...progress }); }
+  if (job.progress.status === 'failed') { return res.json({ status: 'failed', ...progress }); }
+  return res.json({ status: 'processing', ...progress });
 });
 router.get('/:jobId', async (req: Request, res: Response) => {
   const jobId = req.params.jobId as string;
