@@ -57,7 +57,10 @@ function runOnce(url: string, attempt: YtAttempt, timeoutMs: number): Promise<Yt
   });
 }
 
-export const getMetadata = async (url: string): Promise<YtDlpMetadata> => {
+export const getMetadata = async (
+  url: string,
+  onStage?: (stage: string, detail?: string) => void
+): Promise<YtDlpMetadata> => {
   try {
     new URL(url);
   } catch {
@@ -65,11 +68,27 @@ export const getMetadata = async (url: string): Promise<YtDlpMetadata> => {
   }
   const attempts = attemptsFor(url);
   let lastError: Error | null = null;
+  let best: YtDlpMetadata | null = null;
+  let bestHeights = -1;
+  let tried = 0;
   for (const attempt of attempts) {
+    if (best && (bestHeights >= 4 || tried >= 3)) break;
+    tried++;
     try {
       console.log(`[FlowFetch] analyze attempt: ${attempt.name} for ${url}`);
+      onStage?.('client', attempt.name);
       const metadata = await runOnce(url, attempt, 30000);
-      if (metadata.formats && metadata.formats.length > 0) return metadata;
+      if (metadata.formats && metadata.formats.length > 0) {
+        const heights = new Set(
+          metadata.formats.filter((f) => f.height && f.vcodec !== 'none').map((f) => f.height)
+        ).size;
+        if (heights > bestHeights) {
+          best = metadata;
+          bestHeights = heights;
+        }
+        if (bestHeights >= 4 && best) return best;
+        continue;
+      }
       throw new Error('yt-dlp returned no formats');
     } catch (err: any) {
       lastError = err;
@@ -77,5 +96,6 @@ export const getMetadata = async (url: string): Promise<YtDlpMetadata> => {
       continue;
     }
   }
+  if (best) return best;
   throw lastError ?? new Error('yt-dlp failed: unknown error');
 };
