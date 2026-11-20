@@ -4,12 +4,17 @@ import { Hero } from './components/Hero';
 import { VideoInfo } from './components/VideoInfo';
 import { FormatSelector } from './components/FormatSelector';
 import { analyzeUrl, startDownload, getDownloadUrl } from './utils/api';
+import { isAdultUrl } from './utils/adultSites';
 import type { Metadata } from './utils/api';
 import './index.css';
 interface PendingJob { formatId: string; jobId: string; streamMode: string; }
 export default function App() {
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [ageConfirmed, setAgeConfirmed] = useState(false);
+  // Adult-link 18+ gate (before Analyze): URL that is waiting for confirmation.
+  const [pendingAdultUrl, setPendingAdultUrl] = useState<string | null>(null);
+  // URL the user already confirmed as 18+ in this session.
+  const [adultConfirmedUrl, setAdultConfirmedUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPrefetching, setIsPrefetching] = useState(false);
@@ -24,21 +29,53 @@ export default function App() {
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
       if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); }
-      else { setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
+      else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
     };
     if (!window.history.state) { window.history.replaceState({ page: 'home' }, "", window.location.pathname); }
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-  const sanitizeFilename = (name: string) => name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
+  const sanitizeFilename = (name: string) => name.replace(/[<>:\"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
   const handleAnalyze = async (url: string) => {
-    setErrorMsg(null); setToastMsg(null); setIsLoading(true); setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null;
-    try { const data = await analyzeUrl(url); setMetadata(data); window.history.pushState({ page: 'results', metadata: data }, "", "#results"); }
-    catch (err) { showError(err instanceof Error ? err.message : 'Analysis failed'); }
-    finally { setIsLoading(false); }
+    if (isAdultUrl(url) && adultConfirmedUrl !== url) {
+      setPendingAdultUrl(url);
+      return;
+    }
+    await doAnalyze(url);
+  };
+
+  const confirmAdult = async () => {
+    if (!pendingAdultUrl) return;
+    const url = pendingAdultUrl;
+    setAdultConfirmedUrl(url);
+    setPendingAdultUrl(null);
+    await doAnalyze(url);
+  };
+
+  const cancelAdult = () => {
+    setPendingAdultUrl(null);
+  };
+
+  const doAnalyze = async (url: string) => {
+    setErrorMsg(null);
+    setToastMsg(null);
+    setIsLoading(true);
+    setMetadata(null);
+    setAgeConfirmed(false);
+    pendingJobRef.current = null;
+    prefetchingFormatRef.current = null;
+    try {
+      const data = await analyzeUrl(url);
+      setMetadata(data);
+      window.history.pushState({ page: 'results', metadata: data }, "", "#results");
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setIsLoading(false);
+    }
   };
   const handleReset = () => {
-    setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
+    setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
     if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
@@ -84,6 +121,17 @@ export default function App() {
       <Header onLogoClick={handleReset} />
       <main className="main-content container mt-12 mb-16">
         {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} />)}
+        {pendingAdultUrl && !metadata && (
+          <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
+            <h2 className="text-2xl font-bold mb-4">Are you 18+?</h2>
+            <p className="text-muted mb-2">This link is from an adult site. This content is for adults only.</p>
+            <p className="text-muted mb-8">Please confirm that you are at least 18 years old to continue.</p>
+            <div className="flex gap-4 justify-center">
+              <button className="btn btn-outline" onClick={cancelAdult}>No, I am under 18</button>
+              <button className="btn btn-primary" onClick={confirmAdult}>Yes, I am 18 or older</button>
+            </div>
+          </div>
+        )}
         {metadata && (
           <div className="analysis-results">
             {toastMsg && (<div className="bg-success/15 text-success border border-success/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{toastMsg}</div>)}
