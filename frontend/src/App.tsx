@@ -18,11 +18,19 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPrefetching, setIsPrefetching] = useState(false);
+    // Live server-side progress while a merged file is prepared (0-100), shown on the button so it never looks frozen.
+    const [preparingPercent, setPreparingPercent] = useState<number | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const pendingJobRef = useRef<PendingJob | null>(null);
   const readyJobRef = useRef<PendingJob | null>(null);
   const pollingJobRef = useRef<string | null>(null);
+    const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const stopPolling = () => {
+          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+          pollTimerRef.current = null;
+          pollingJobRef.current = null;
+    };
   const prefetchingFormatRef = useRef<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = (msg: string, durationMs = 5000) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), durationMs); };
@@ -32,7 +40,7 @@ export default function App() {
     const handlePopState = (event: PopStateEvent) => {
       const state = event.state;
       if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); }
-      else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null;  readyJobRef.current = null; pollingJobRef.current = null;prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
+          else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false);  prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
     };
     if (!window.history.state) { window.history.replaceState({ page: 'home' }, "", window.location.pathname); }
     window.addEventListener('popstate', handlePopState);
@@ -67,7 +75,9 @@ export default function App() {
     setAgeConfirmed(false);
     pendingJobRef.current = null;
     readyJobRef.current = null;
-    pollingJobRef.current = null;
+      stopPolling();
+      setPreparingPercent(null);
+      setIsDownloading(false);
     prefetchingFormatRef.current = null;
     try {
       const data = await analyzeUrl(url);
@@ -84,7 +94,7 @@ export default function App() {
     }
   };
   const handleReset = () => {
-    setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; pollingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
+      setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); prefetchingFormatRef.current = null;
     if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
@@ -92,6 +102,11 @@ export default function App() {
     if (!metadata?.analysisId) return;
     if (prefetchingFormatRef.current === formatId) return;
     if (pendingJobRef.current?.formatId === formatId) return;
+    // Switching format frees the button (the stuck-button bug reported 2026-11-20).
+    stopPolling();
+    readyJobRef.current = null;
+    setPreparingPercent(null);
+    setIsDownloading(false);
     prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
     try {
       const { jobId, streamMode } = await startDownload(metadata.analysisId, formatId);
@@ -100,28 +115,38 @@ export default function App() {
     finally { if (prefetchingFormatRef.current === formatId) { prefetchingFormatRef.current = null; setIsPrefetching(false); } }
   };
   const pollDownloadStatus = (jobId: string) => {
-    if (pollingJobRef.current === jobId) return;
-    pollingJobRef.current = jobId;
-    const interval = setInterval(async () => {
-      try {
-        const data = await getDownloadStatus(jobId);
-        if (data.status === 'ready') {
-          clearInterval(interval);
-          pollingJobRef.current = null;
-          readyJobRef.current = pendingJobRef.current;
-          setIsDownloading(false);
-          showToast('Ready! Click Download once more to start.');
-        } else if (data.status === 'failed') {
-          clearInterval(interval);
-          pollingJobRef.current = null;
-          pendingJobRef.current = null;
-          setIsDownloading(false);
-          showError('Download failed on the server. Please try again.');
-        }
-      } catch {
-        // Keep polling on fetch errors.
-      }
-    }, 2000);
+      if (pollingJobRef.current === jobId) return;
+      pollingJobRef.current = jobId;
+      const startedAt = Date.now();
+      const MAX_POLL_MS = 5 * 60 * 1000;
+      pollTimerRef.current = setInterval(async () => {
+            if (Date.now() - startedAt > MAX_POLL_MS) {
+                    stopPolling();
+                    setPreparingPercent(null);
+                    setIsDownloading(false);
+                    showToast('Still preparing — tap Download again to check.');
+                    return;
+            }
+            try {
+                    const res = await getDownloadStatus(jobId);
+                    if (typeof res.percent === 'number') setPreparingPercent(res.percent);
+                    if (res.status === 'ready') {
+                              stopPolling();
+                              if (pendingJobRef.current?.jobId === jobId) readyJobRef.current = pendingJobRef.current;
+                              setPreparingPercent(null);
+                              setIsDownloading(false);
+                              showToast('Ready! Click Download once more to start.');
+                    } else if (res.status === 'failed') {
+                              stopPolling();
+                              pendingJobRef.current = null;
+                              setPreparingPercent(null);
+                              setIsDownloading(false);
+                              showError('Download failed on the server. Please try again.');
+                    }
+            } catch {
+                    // Keep polling on fetch errors.
+            }
+      }, 2000);
   };
 
   const fireDownloadClick = (jobId: string, filename: string) => {
@@ -146,6 +171,7 @@ export default function App() {
       fireDownloadClick(ready.jobId, filename);
       readyJobRef.current = null;
       pendingJobRef.current = null;
+      setPreparingPercent(null);
       setIsDownloading(true);
       showToast("Download started - check your browser's downloads bar!");
       downloadTimeoutRef.current = setTimeout(() => { setIsDownloading(false); }, 3_000);
@@ -206,7 +232,7 @@ export default function App() {
             ) : (
               <>
                 <VideoInfo metadata={metadata} onReset={handleReset} />
-                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} />
+                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} preparingPercent={preparingPercent} />
               </>
             )}
           </div>
