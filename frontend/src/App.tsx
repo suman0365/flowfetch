@@ -68,7 +68,7 @@ export default function App() {
     try {
       const data = await analyzeUrl(url);
       setMetadata(data);
-      window.history.pushState({ page: 'results', metadata: data }, "", "#results");
+      window.history.pushState({ page: 'results', metadata: data }, "", "#results"); /* On mobile the results can sit below the fold after the Hero unmounts, so scroll them into view. */ requestAnimationFrame(() => { document.querySelector('.analysis-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
     } catch (err) {
             const raw = err instanceof Error ? err.message : 'Analysis failed';       
       const friendly = /not a bot|Sign in to confirm|Failed to extract any player response|EXTRACTION_BLOCKED/i.test(raw)         
