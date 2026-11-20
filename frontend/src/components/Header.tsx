@@ -7,7 +7,7 @@ export function Header({ onLogoClick }: HeaderProps) {
     <header className="header">
       <div className="container flex items-center justify-between">
         <div className="logo flex items-center gap-2" onClick={onLogoClick} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' && onLogoClick) onLogoClick(); }}>
-          <ArrowDownToLine size={24} className="text-primary" />
+          <span className="logo-mark"><ArrowDownToLine size={18} /></span>
           <span className="logo-text">FlowFetch</span>
         </div>
         <nav className="nav-desktop">
