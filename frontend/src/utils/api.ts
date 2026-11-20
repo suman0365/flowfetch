@@ -61,6 +61,12 @@ export const getDownloadUrl = (jobId: string) => {
   return `${BACKEND_DIRECT}/api/download/${jobId}`;
 };
 
+export const getDownloadStatus = async (jobId: string): Promise<{ status: 'ready' | 'failed' | 'processing'; filename?: string }> => {
+  const res = await fetch(`${API_BASE}/api/download/status/${jobId}`);
+  return res.json();
+};
+
+
 export const getProgressUrl = (jobId: string) => {
   return `${API_BASE}/api/progress/${jobId}`;
 };
