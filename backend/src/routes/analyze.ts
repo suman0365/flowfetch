@@ -33,7 +33,7 @@ router.post('/', async (req: Request, res: Response) => {
       if (f.resolution) return f.resolution.split('x')[1] ? `${f.resolution.split('x')[1]}p` : f.resolution;
       return 'Unknown';
     };
-    videoOnly.forEach(v => {
+    /* yt-dlp's newer YouTube extractor returns "-drc" suffixed IDs for DRC variants; those 403 on media download while plain IDs work (verified: 134+139-drc failed 403, 134+139 downloaded 42 MB), so strip the suffix from IDs passed to yt-dlp; the frontend format key is untouched as it is only a cache key. */ const cleanId = (id: string) => id.replace(/-drc$/, ''); videoOnly.forEach(v => {
       let bestAudio = audioOnly.find(a => v.ext === 'mp4' ? a.ext === 'm4a' : true);
       if (!bestAudio && audioOnly.length > 0) { bestAudio = audioOnly[audioOnly.length - 1]; }
       if (bestAudio) {
@@ -42,8 +42,8 @@ router.post('/', async (req: Request, res: Response) => {
           type: 'video+audio',
           resolution: getResText(v),
           ext: v.ext === 'mp4' && bestAudio.ext === 'm4a' ? 'mp4' : v.ext,
-          videoFormatId: v.format_id,
-          audioFormatId: bestAudio.format_id,
+          videoFormatId: cleanId(v.format_id),
+          audioFormatId: cleanId(bestAudio.format_id),
           filesize: (v.filesize || v.filesize_approx || 0) + (bestAudio.filesize || bestAudio.filesize_approx || 0) || undefined,
           fps: v.fps,
           note: v.format_note
@@ -53,14 +53,14 @@ router.post('/', async (req: Request, res: Response) => {
     combinedOriginal.forEach(c => {
       const resText = getResText(c);
       if (!normalizedFormats.some(n => n.resolution === resText && n.type === 'video+audio')) {
-        normalizedFormats.push({ id: `raw-${c.format_id}`, type: 'video+audio', resolution: resText, ext: c.ext, videoFormatId: c.format_id, filesize: c.filesize || c.filesize_approx || undefined, fps: c.fps, note: c.format_note });
+        normalizedFormats.push({ id: `raw-${c.format_id}`, type: 'video+audio', resolution: resText, ext: c.ext, videoFormatId: cleanId(c.format_id), filesize: c.filesize || c.filesize_approx || undefined, fps: c.fps, note: c.format_note });
       }
     });
-    videoOnly.forEach(v => {
-      normalizedFormats.push({ id: `video-${v.format_id}`, type: 'video', resolution: getResText(v), ext: v.ext, videoFormatId: v.format_id, filesize: v.filesize || v.filesize_approx || undefined, fps: v.fps, note: v.format_note });
+    /* yt-dlp's newer YouTube extractor returns "-drc" suffixed IDs for DRC variants; those 403 on media download while plain IDs work (verified: 134+139-drc failed 403, 134+139 downloaded 42 MB), so strip the suffix from IDs passed to yt-dlp; the frontend format key is untouched as it is only a cache key. */  videoOnly.forEach(v => {
+      normalizedFormats.push({ id: `video-${v.format_id}`, type: 'video', resolution: getResText(v), ext: v.ext, videoFormatId: cleanId(v.format_id), filesize: v.filesize || v.filesize_approx || undefined, fps: v.fps, note: v.format_note });
     });
     audioOnly.forEach(a => {
-      normalizedFormats.push({ id: `audio-${a.format_id}`, type: 'audio', resolution: 'Audio', ext: a.ext, audioFormatId: a.format_id, filesize: a.filesize || a.filesize_approx || undefined, note: a.format_note });
+      normalizedFormats.push({ id: `audio-${a.format_id}`, type: 'audio', resolution: 'Audio', ext: a.ext, audioFormatId: cleanId(a.format_id), filesize: a.filesize || a.filesize_approx || undefined, note: a.format_note });
     });
     const uniqueMap = new Map<string, NormalizedFormat>();
     normalizedFormats.forEach(format => {
