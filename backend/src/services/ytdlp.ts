@@ -31,7 +31,7 @@ export interface YtDlpMetadata {
 
 function runOnce(url: string, attempt: YtAttempt, timeoutMs: number): Promise<YtDlpMetadata> {
   return new Promise((resolve, reject) => {
-    const args = [...baseArgs(attempt), '--dump-json', url];
+    const args = [...baseArgs(attempt, url), '--dump-json', url];
     const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdoutData = '';
     let stderrData = '';
