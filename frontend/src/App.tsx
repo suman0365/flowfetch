@@ -84,7 +84,7 @@ export default function App() {
     }
   };
   const handleReset = () => {
-    setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null readyJobRef.current = null; pollingJobRef.current = null;; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
+    setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; pollingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
     if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
