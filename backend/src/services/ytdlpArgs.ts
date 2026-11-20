@@ -71,14 +71,22 @@ export function cookiesArgs(): string[] {
 }
 
 /** Common yt-dlp flags shared by metadata and download calls. */
-export function baseArgs(attempt: YtAttempt): string[] {
+export function baseArgs(attempt: YtAttempt, url?: string): string[] {
   // Deno is now installed in the Docker image and is yt-dlp's default
   // JavaScript runtime, so prefer it for solving YouTube's JavaScript
   // challenges; Node is the fallback.
   const args: string[] = ['--no-playlist', '--no-warnings', '--socket-timeout', '20', '--js-runtimes', 'deno,node'];
   if (attempt.extractorArgs) args.push('--extractor-args', attempt.extractorArgs);
   args.push(...cookiesArgs());
+  if (url) args.push(...proxyArgs(url));
   return args;
+}
+// Proxy for YouTube only, set by start.sh when WARP is healthy or by a paid residential proxy via YT_PROXY env var; non-YouTube sites go direct; never log this value as it can contain credentials.
+export function proxyArgs(url: string): string[] {
+    if (!isYouTubeUrl(url)) return [];
+    const proxy = process.env.YT_PROXY;
+    if (!proxy) return [];
+    return ['--proxy', proxy];
 }
 
 export function looksLikeBotBlock(stderr: string): boolean {
