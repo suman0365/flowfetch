@@ -27,6 +27,9 @@ export const YOUTUBE_ATTEMPTS: YtAttempt[] = [
   { name: 'android', extractorArgs: 'youtube:player_client=android;player_skip=webpage,configs' },
   { name: 'android-plain', extractorArgs: 'youtube:player_client=android' },
   { name: 'tv_embedded', extractorArgs: 'youtube:player_client=tv_embedded' },
+  { name: 'web_safari', extractorArgs: 'youtube:player_client=web_safari;player_skip=webpage,configs' },
+  { name: 'mediaconnect', extractorArgs: 'youtube:player_client=mediaconnect' },
+  { name: 'web_embedded', extractorArgs: 'youtube:player_client=web_embedded' },
 ];
 
 export function isYouTubeUrl(url: string): boolean {
@@ -69,7 +72,10 @@ export function cookiesArgs(): string[] {
 
 /** Common yt-dlp flags shared by metadata and download calls. */
 export function baseArgs(attempt: YtAttempt): string[] {
-  const args: string[] = ['--no-playlist', '--no-warnings', '--socket-timeout', '20'];
+  // Use Node as the JS runtime: Node is already in the Docker image, while
+  // yt-dlp defaults to Deno only, which is not installed, so it cannot
+  // solve YouTube's JavaScript challenge without this flag.
+  const args: string[] = ['--no-playlist', '--no-warnings', '--socket-timeout', '20', '--js-runtimes', 'node'];
   if (attempt.extractorArgs) args.push('--extractor-args', attempt.extractorArgs);
   args.push(...cookiesArgs());
   return args;
