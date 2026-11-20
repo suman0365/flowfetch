@@ -1,7 +1,7 @@
 import type { NormalizedFormat } from '../utils/api';
 import { Download, Film, Music, MonitorPlay, Loader2 } from 'lucide-react';
 import { useState } from 'react';
-interface FormatSelectorProps { formats: NormalizedFormat[]; onDownload: (formatId: string) => void; onFormatSelect: (formatId: string) => void; isDownloading: boolean; isPrefetching: boolean; }
+interface FormatSelectorProps { formats: NormalizedFormat[]; onDownload: (formatId: string) => void; onFormatSelect: (formatId: string) => void; isDownloading: boolean; isPrefetching: boolean; preparingPercent?: number | null; }
 const formatBytes = (bytes?: number) => {
   if (!bytes) return 'Size unavailable';
   if (bytes === 0) return '0 B';
@@ -10,7 +10,7 @@ const formatBytes = (bytes?: number) => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
-export function FormatSelector({ formats, onDownload, onFormatSelect, isDownloading, isPrefetching }: FormatSelectorProps) {
+export function FormatSelector({ formats, onDownload, onFormatSelect, isDownloading, isPrefetching, preparingPercent }: FormatSelectorProps) {
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
   const videoAndAudio = formats.filter(f => f.type === 'video+audio');
   const videoOnly = formats.filter(f => f.type === 'video');
@@ -37,7 +37,7 @@ export function FormatSelector({ formats, onDownload, onFormatSelect, isDownload
     );
   };
   const busy = isDownloading || isPrefetching;
-  const buttonLabel = isDownloading ? 'Starting Download...' : isPrefetching ? 'Preparing...' : 'Download';
+    const buttonLabel = isDownloading && preparingPercent != null ? `Preparing... ${preparingPercent}%` : isDownloading ? 'Starting Download...' : isPrefetching ? 'Preparing...' : 'Download';
   return (
     <div className="format-selector mt-8">
       <h2 className="text-center mb-8 text-2xl font-semibold">Choose your format</h2>
@@ -49,6 +49,8 @@ export function FormatSelector({ formats, onDownload, onFormatSelect, isDownload
           {busy ? <Loader2 size={20} className="mr-2 animate-spin" /> : <Download size={20} className="mr-2" />}{buttonLabel}
         </button>
         {isPrefetching && (<p className="text-muted text-sm mt-3">Registering format with server...</p>)}
+        {isDownloading && preparingPercent != null && (<p className="text-muted text-sm mt-3">Building your file on the server: {preparingPercent}% — please wait, the button frees up when it is ready.</p>)}
+        {isDownloading && preparingPercent == null && (<p className="text-muted text-sm mt-3">Preparing your file on the server... tap another format to switch, or wait for it to be ready.</p>)}
       </div>
     </div>
   );
