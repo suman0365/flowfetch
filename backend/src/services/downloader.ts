@@ -135,7 +135,7 @@ class DownloaderService extends EventEmitter {
     }
     const attempts = attemptsFor(url);
     const baseArgsFor = (attempt: { name: string; extractorArgs?: string }): string[] => {
-      const a: string[] = ['-o', '-', ...baseArgs(attempt), '--newline'];
+      const a: string[] = ['-o', '-', ...baseArgs(attempt, url), '--newline'];
       if (isMerged) {
         a.push('-f', `${format.videoFormatId}+${format.audioFormatId}`);
         if (format.ext === 'mp4') {
@@ -296,7 +296,7 @@ class DownloaderService extends EventEmitter {
     const runAttempt = () => {
       const attempt = attempts[attemptIndex];
       console.log(`[FlowFetch] disk download attempt: ${attempt.name} for job ${id}`);
-      const args = ['-o', outputPath, ...baseArgs(attempt)];
+      const args = ['-o', outputPath, ...baseArgs(attempt, url)];
       if (format.type === 'video+audio' && format.videoFormatId && format.audioFormatId) {
         args.push('-f', `${format.videoFormatId}+${format.audioFormatId}`);
         args.push('--merge-output-format', format.ext || 'mp4');
