@@ -68,7 +68,7 @@ router.get('/:jobId', async (req: Request, res: Response) => {
   const rangeHeader = req.headers.range;
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Cache-Control', 'no-store');
-  const sanitizeFilename = (name: string) => name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
+  const sanitizeFilename = (name: string) => name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim() || 'video';
   const safeTitle = sanitizeFilename(job.title);
   const resSuffix = job.format.resolution ? ` - ${job.format.resolution}` : '';
   const safeFilename = `${safeTitle}${resSuffix}.${job.format.ext}`;
