@@ -1,0 +1,111 @@
+import { useState, useRef, useEffect } from 'react';
+import { Header } from './components/Header';
+import { Hero } from './components/Hero';
+import { VideoInfo } from './components/VideoInfo';
+import { FormatSelector } from './components/FormatSelector';
+import { analyzeUrl, startDownload, getDownloadUrl } from './utils/api';
+import type { Metadata } from './utils/api';
+import './index.css';
+interface PendingJob { formatId: string; jobId: string; streamMode: string; }
+export default function App() {
+  const [metadata, setMetadata] = useState<Metadata | null>(null);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isPrefetching, setIsPrefetching] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const pendingJobRef = useRef<PendingJob | null>(null);
+  const prefetchingFormatRef = useRef<string | null>(null);
+  const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (msg: string, durationMs = 5000) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), durationMs); };
+  const showError = (msg: string) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), 8000); };
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state;
+      if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); }
+      else { setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
+    };
+    if (!window.history.state) { window.history.replaceState({ page: 'home' }, "", window.location.pathname); }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+  const sanitizeFilename = (name: string) => name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
+  const handleAnalyze = async (url: string) => {
+    setErrorMsg(null); setToastMsg(null); setIsLoading(true); setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null;
+    try { const data = await analyzeUrl(url); setMetadata(data); window.history.pushState({ page: 'results', metadata: data }, "", "#results"); }
+    catch (err) { showError(err instanceof Error ? err.message : 'Analysis failed'); }
+    finally { setIsLoading(false); }
+  };
+  const handleReset = () => {
+    setMetadata(null); setAgeConfirmed(false); pendingJobRef.current = null; prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
+    if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
+    if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
+  };
+  const handleFormatSelect = async (formatId: string) => {
+    if (!metadata?.analysisId) return;
+    if (prefetchingFormatRef.current === formatId) return;
+    if (pendingJobRef.current?.formatId === formatId) return;
+    prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
+    try {
+      const { jobId, streamMode } = await startDownload(metadata.analysisId, formatId);
+      if (prefetchingFormatRef.current === formatId) { pendingJobRef.current = { formatId, jobId, streamMode }; }
+    } catch (err) { console.warn('[FlowFetch] Pre-fetch failed:', err); }
+    finally { if (prefetchingFormatRef.current === formatId) { prefetchingFormatRef.current = null; setIsPrefetching(false); } }
+  };
+  const handleDownload = (formatId: string) => {
+    if (!metadata) return;
+    if (isDownloading || isPrefetching) return;
+    const format = metadata.formats.find(f => f.id === formatId);
+    const ext = format ? format.ext : 'mp4';
+    const resSuffix = format?.resolution && format.resolution !== 'Audio' ? ` - ${format.resolution}` : '';
+    const filename = `${sanitizeFilename(metadata.title)}${resSuffix}.${ext}`;
+    const pending = pendingJobRef.current;
+    if (pending && pending.formatId === formatId) {
+      const downloadUrl = getDownloadUrl(pending.jobId);
+      console.log('NATIVE_DOWNLOAD_TRIGGER_FIRED:', downloadUrl, filename);
+      const a = document.createElement('a'); a.href = downloadUrl; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setIsDownloading(true); showToast("Download started - check your browser's downloads bar!");
+      pendingJobRef.current = null;
+      const releaseDelay = pending.streamMode === 'process_first' ? 60_000 : 3_000;
+      downloadTimeoutRef.current = setTimeout(() => { setIsDownloading(false); }, releaseDelay);
+    } else {
+      if (!metadata.analysisId) return;
+      setIsDownloading(true);
+      const FALLBACK_TIMEOUT_MS = 20_000;
+      const timeoutHandle = setTimeout(() => { setIsDownloading(false); showError('Timed out preparing download. Please try clicking Download again.'); }, FALLBACK_TIMEOUT_MS);
+      startDownload(metadata.analysisId, formatId)
+        .then(({ jobId, streamMode }) => { clearTimeout(timeoutHandle); pendingJobRef.current = { formatId, jobId, streamMode }; setIsDownloading(false); showToast('Ready! Click Download once more to start.'); })
+        .catch(err => { clearTimeout(timeoutHandle); setIsDownloading(false); showError(err instanceof Error ? err.message : 'Failed to prepare download. Please try again.'); });
+    }
+  };
+  return (
+    <div className="app">
+      <Header onLogoClick={handleReset} />
+      <main className="main-content container mt-12 mb-16">
+        {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} />)}
+        {metadata && (
+          <div className="analysis-results">
+            {toastMsg && (<div className="bg-success/15 text-success border border-success/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{toastMsg}</div>)}
+            {errorMsg && (<div className="bg-red-500/15 text-red-400 border border-red-500/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{errorMsg}</div>)}
+            {metadata.age_limit && metadata.age_limit >= 18 && !ageConfirmed ? (
+              <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
+                <h2 className="text-2xl font-bold mb-4">Age Confirmation Required</h2>
+                <p className="text-muted mb-8">This content is age-restricted. Please confirm that you are at least 18 years old to proceed.</p>
+                <div className="flex gap-4 justify-center">
+                  <button className="btn btn-outline" onClick={handleReset}>Cancel</button>
+                  <button className="btn btn-primary" onClick={() => setAgeConfirmed(true)}>I am 18 or older</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <VideoInfo metadata={metadata} onReset={handleReset} />
+                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} />
+              </>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
