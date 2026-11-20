@@ -172,3 +172,8 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 400; letter-spacing:
 .download-progress-card { max-width: 600px; margin: 0 auto; }
 @keyframes indeterminate-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
 .progress-bar-indeterminate { width: 25% !important; animation: indeterminate-slide 1.6s ease-in-out infinite; }
+
+
+/* Hero: start close under the header. */
+.main-content { margin-top: 0; }
+.hero-section { padding-top: 1.5rem; }
