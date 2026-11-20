@@ -22,6 +22,9 @@ export default function App() {
     const [preparingPercent, setPreparingPercent] = useState<number | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Real Analyze loading: a bar that creeps toward 85% while the server works and only reaches 100% when the real result arrives.
+  const [analyzeProgress, setAnalyzeProgress] = useState<number | null>(null);
+  const [analyzeStage, setAnalyzeStage] = useState('');
   const pendingJobRef = useRef<PendingJob | null>(null);
   const readyJobRef = useRef<PendingJob | null>(null);
   const pollingJobRef = useRef<string | null>(null);
@@ -33,6 +36,13 @@ export default function App() {
     };
   const prefetchingFormatRef = useRef<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const analyzeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopAnalyzeProgress = () => {
+    if (analyzeTimerRef.current) clearInterval(analyzeTimerRef.current);
+    analyzeTimerRef.current = null;
+    setAnalyzeProgress(null);
+    setAnalyzeStage('');
+  };
   const showToast = (msg: string, durationMs = 5000) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), durationMs); };
   // No auto-clear: the 8-second timeout made failures look silent again. Cleared by the next Analyze / Reset, which already set errorMsg to null.
   const showError = (msg: string) => { setErrorMsg(msg);  };
@@ -80,10 +90,22 @@ export default function App() {
       setIsDownloading(false);
     prefetchingFormatRef.current = null;
     try {
+          const startedAt = Date.now();
+      setAnalyzeProgress(6);
+      setAnalyzeStage('Sending your link...');
+      analyzeTimerRef.current = setInterval(() => {
+        const elapsed = (Date.now() - startedAt) / 1000;
+        setAnalyzeProgress((cur) => Math.min(85, Math.round((cur ?? 6) + (85 - (cur ?? 6)) * 0.06 + 0.4)));
+        setAnalyzeStage(elapsed > 20 ? 'Taking longer than usual — the video host is slow to answer...' : elapsed > 8 ? 'Still reading — the server is working through the video...' : 'Reading video details...');
+      }, 500);
       const data = await analyzeUrl(url);
+        if (analyzeTimerRef.current) clearInterval(analyzeTimerRef.current);
+      setAnalyzeProgress(100);
+      setAnalyzeStage(`Found ${data.formats.length} options`);
       setMetadata(data);
       window.history.pushState({ page: 'results', metadata: data }, "", "#results"); /* On mobile the results can sit below the fold after the Hero unmounts, so scroll them into view. */ requestAnimationFrame(() => { document.querySelector('.analysis-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
     } catch (err) {
+      stopAnalyzeProgress();
             const raw = err instanceof Error ? err.message : 'Analysis failed';       
       const friendly = /not a bot|Sign in to confirm|Failed to extract any player response|EXTRACTION_BLOCKED/i.test(raw)         
           ? 'YouTube blocked this video from our server (bot check). Try a non-YouTube public link, or try this link again later.'         
@@ -91,16 +113,17 @@ export default function App() {
       showError(friendly);
     } finally {
       setIsLoading(false);
+      setTimeout(() => stopAnalyzeProgress(), 600);
     }
   };
   const handleReset = () => {
-      setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); prefetchingFormatRef.current = null;
+      stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); prefetchingFormatRef.current = null;
     if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
   const handleFormatSelect = async (formatId: string) => {
     if (!metadata?.analysisId) return;
-    if (prefetchingFormatRef.current === formatId) return;
+    if (prefetchingFormatRef.current === formatId && !pendingJobRef.current) return;
     if (pendingJobRef.current?.formatId === formatId) return;
     // Switching format frees the button (the stuck-button bug reported 2026-11-20).
     stopPolling();
@@ -161,7 +184,7 @@ export default function App() {
   };
   const handleDownload = (formatId: string) => {
     if (!metadata) return;
-    if (isDownloading || isPrefetching) return;
+    if (isDownloading) return;
     const format = metadata.formats.find(f => f.id === formatId);
     const ext = format ? format.ext : 'mp4';
     const resSuffix = format?.resolution && format.resolution !== 'Audio' ? ` - ${format.resolution}` : '';
@@ -204,9 +227,9 @@ export default function App() {
     <div className="app">
       <Header onLogoClick={handleReset} />
       <main className="main-content container mt-12 mb-16"> 
-        {toastMsg && (<div className="bg-success/15 text-success border border-success/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{toastMsg}</div>)} 
-        {errorMsg && (<div className="bg-red-500/15 text-red-400 border border-red-500/30 px-4 py-3 rounded-lg mb-6 text-center font-medium">{errorMsg}</div>)}
-        {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} />)}
+        {toastMsg && (<div className="toast-ok">{toastMsg}</div>)}
+        {errorMsg && (<div className="toast-err">{errorMsg}</div>)}
+        {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} analyzeProgress={analyzeProgress} analyzeStage={analyzeStage} />)}
         {pendingAdultUrl && !metadata && (
           <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
             <h2 className="text-2xl font-bold mb-4">Are you 18+?</h2>
@@ -238,6 +261,7 @@ export default function App() {
           </div>
         )}
       </main>
+      <footer className="site-footer container">FlowFetch — built for open-source videos. Paste a public link, pick a quality, download the file.</footer>
     </div>
   );
 }
