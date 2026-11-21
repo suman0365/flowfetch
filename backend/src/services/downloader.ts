@@ -200,7 +200,7 @@ class DownloaderService extends EventEmitter {
     res.setHeader('Content-Type', contentTypeFor(format.ext));
     // Plain filename="..." must be ASCII-only (Node rejects non-Latin1
     // header bytes); the RFC 5987 filename* carries the real title.
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(fullFilename)}`);
+    res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(fullFilename)}`);
     res.setHeader('Cache-Control', 'no-store');
     // Content-Length: for a disk build (v13.3) the caller passes the
     // built file's exact size — that is what makes Chrome show a real
