@@ -42,11 +42,12 @@ router.post('/', async (req: Request, res: Response) => {
 // GET /api/download/:jobId  –  Deliver the file to the browser
 //
 // IMPORTANT: This endpoint is what the browser's native download manager
-// talks to directly. Headers (Content-Disposition: attachment) are sent
-// immediately, so the download entry appears in Chrome Downloads the
-// moment the user taps Download — there is no site-side "Preparing..."
-// phase any more (v13). Once the response begins, the download is owned
-// by the browser and continues independently of the React page.
+// talks to directly. The response is opened by the user's tap (so the
+// gesture check passes) and the file is delivered as a normal browser
+// download — Content-Disposition: attachment, exact Content-Length, a
+// real 0–100% bar. There is no site-side "Preparing..." phase any more
+// (v13). Once the response begins, the download is owned by the browser
+// and continues independently of the React page.
 //
 // Modes:
 //   'direct'       – Audio-only, video-only, or a progressive combined
@@ -57,12 +58,12 @@ router.post('/', async (req: Request, res: Response) => {
 //                    the live merge ran two yt-dlp + FFmpeg concurrently
 //                    and OOM-restarted Render's 512 MB free instance on
 //                    every merge, 2026-11-21 10:15–10:29 IST), then
-//                    streamed to the browser. Headers are still sent
-//                    immediately, so the download entry appears in
-//                    Chrome Downloads the instant the user taps Download;
-//                    it sits at 0% while the file builds, then fills
-//                    natively. No Content-Length (size unknown until the
-//                    merge finishes); Chrome shows bytes counting up.
+//                    streamed to the browser. v13.3: headers go out
+//                    AFTER the build, carrying the exact Content-Length
+//                    of the finished file, so Chrome shows a true
+//                    0–100% bar. The download entry appears when the
+//                    build finishes — not instantly, but with a real
+//                    percentage, like a normal browser download.
 // ---------------------------------------------------------------------------
 router.get('/:jobId', async (req: Request, res: Response) => {
   const jobId = req.params.jobId as string;
