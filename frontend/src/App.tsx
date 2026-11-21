@@ -20,6 +20,14 @@ export default function App() {
   const [isPrefetching, setIsPrefetching] = useState(false);
     // Live server-side progress while a merged file is prepared (0-100), shown on the button so it never looks frozen.
     const [preparingPercent, setPreparingPercent] = useState<number | null>(null);
+  // "Ready" / "failed" banner state, shown RIGHT ABOVE the Download
+  // button (not only as a toast at the top of the page): on 2026-11-21
+  // Suman's Big Buck Bunny 240p file finished building on the server,
+  // but the "Ready! Click Download once more" toast rendered at the top
+  // of the page while he was scrolled down at the button — he never saw
+  // it, never clicked again, and no file ever reached his phone.
+  const [downloadReady, setDownloadReady] = useState(false);
+  const [downloadFailMsg, setDownloadFailMsg] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   // Real Analyze loading: a bar that creeps toward 85% while the server works and only reaches 100% when the real result arrives.
@@ -88,8 +96,10 @@ export default function App() {
       stopPolling();
       setPreparingPercent(null);
       setIsDownloading(false);
+    setDownloadReady(false);
+    setDownloadFailMsg(null);
     prefetchingFormatRef.current = null;
-    try {
+        try {
           const startedAt = Date.now();
       setAnalyzeProgress(6);
       setAnalyzeStage('Sending your link...');
@@ -117,7 +127,7 @@ export default function App() {
     }
   };
   const handleReset = () => {
-      stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); prefetchingFormatRef.current = null;
+      stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); setDownloadReady(false); setDownloadFailMsg(null); prefetchingFormatRef.current = null;
     if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
@@ -130,7 +140,9 @@ export default function App() {
     readyJobRef.current = null;
     setPreparingPercent(null);
     setIsDownloading(false);
-    prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
+    setDownloadReady(false);
+    setDownloadFailMsg(null);
+        prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
     try {
       const { jobId, streamMode } = await startDownload(metadata.analysisId, formatId);
       if (prefetchingFormatRef.current === formatId) { pendingJobRef.current = { formatId, jobId, streamMode }; }
@@ -154,17 +166,24 @@ export default function App() {
                     const res = await getDownloadStatus(jobId);
                     if (typeof res.percent === 'number') setPreparingPercent(res.percent);
                     if (res.status === 'ready') {
+                      if (pendingJobRef.current?.jobId === jobId) readyJobRef.current = pendingJobRef.current;
                               stopPolling();
-                              if (pendingJobRef.current?.jobId === jobId) readyJobRef.current = pendingJobRef.current;
                               setPreparingPercent(null);
-                              setIsDownloading(false);
+                      setIsDownloading(false);
+                      setDownloadFailMsg(null);
+                      setDownloadReady(true);
                               showToast('Ready! Click Download once more to start.');
                     } else if (res.status === 'failed') {
                               stopPolling();
                               pendingJobRef.current = null;
                               setPreparingPercent(null);
                               setIsDownloading(false);
-                              showError('Download failed on the server. Please try again.');
+                              setDownloadReady(false);
+                      const failMsg = res.reason === 'BOT_BLOCKED'
+                        ? 'YouTube blocked this video from our server (bot check). Tap Download again to retry — it often works on the next try.'
+                        : 'Download failed on the server. Tap Download again to retry.';
+                  setDownloadFailMsg(failMsg);
+                      showError('Download failed on the server. Please try again.');
                     }
             } catch {
                     // Keep polling on fetch errors.
@@ -195,6 +214,7 @@ export default function App() {
       readyJobRef.current = null;
       pendingJobRef.current = null;
       setPreparingPercent(null);
+      setDownloadReady(false);
       setIsDownloading(true);
       showToast("Download started - check your browser's downloads bar!");
       downloadTimeoutRef.current = setTimeout(() => { setIsDownloading(false); }, 3_000);
@@ -255,7 +275,7 @@ export default function App() {
             ) : (
               <>
                 <VideoInfo metadata={metadata} onReset={handleReset} />
-                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} preparingPercent={preparingPercent} />
+                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} preparingPercent={preparingPercent} downloadReady={downloadReady} downloadFailMsg={downloadFailMsg} />
               </>
             )}
           </div>
