@@ -52,10 +52,16 @@ router.post('/', async (req: Request, res: Response) => {
 //   'direct'       – Audio-only, video-only, or a progressive combined
 //                    format (YouTube 18/22). yt-dlp stdout → response.
 //                    Exact Content-Length, so Chrome shows true 0–100%.
-//   'stream_merge' – DASH video+audio. Two yt-dlp processes stream the
-//                    raw streams into FFmpeg, which muxes a fragmented
-//                    MP4 (or Matroska) to stdout → response. No
-//                    Content-Length (merged size is unknown until the
+//   'disk_build'   – DASH video+audio. The merged file is built on the
+//                    server disk first (ONE yt-dlp process at a time —
+//                    the live merge ran two yt-dlp + FFmpeg concurrently
+//                    and OOM-restarted Render's 512 MB free instance on
+//                    every merge, 2026-11-21 10:15–10:29 IST), then
+//                    streamed to the browser. Headers are still sent
+//                    immediately, so the download entry appears in
+//                    Chrome Downloads the instant the user taps Download;
+//                    it sits at 0% while the file builds, then fills
+//                    natively. No Content-Length (size unknown until the
 //                    merge finishes); Chrome shows bytes counting up.
 // ---------------------------------------------------------------------------
 router.get('/:jobId', async (req: Request, res: Response) => {
@@ -71,7 +77,7 @@ router.get('/:jobId', async (req: Request, res: Response) => {
     return;
   }
 
-  await downloader.startMergeStream(jobId, res);
+  await downloader.startDiskBuildStream(jobId, res);
 });
 
 export default router;
