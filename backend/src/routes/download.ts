@@ -33,7 +33,10 @@ router.get('/status/:jobId', (req: Request, res: Response) => {
     const p = job.progress;
     const progress = { percent: p.percent || 0, downloaded: p.downloaded || '0', total: p.total || '0', speed: p.speed || '0', eta: p.eta || 'Unknown' };
   if (job.progress.status === 'complete' && job.progress.filename) { return res.json({ status: 'ready', filename: job.progress.filename, ...progress }); }
-  if (job.progress.status === 'failed') { return res.json({ status: 'failed', ...progress }); }
+  if (job.progress.status === 'failed') {
+    const reason = job.progress.error?.split(':')[0] ?? 'DOWNLOAD_FAILED';
+    return res.json({ status: 'failed', reason, ...progress });
+  }
   return res.json({ status: 'processing', ...progress });
 });
 router.get('/:jobId', async (req: Request, res: Response) => {
