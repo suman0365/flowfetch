@@ -1,27 +1,28 @@
 import { useState, useRef, useEffect } from 'react';
-import Header from './components/Header';
-import Hero from './components/Hero';
-import VideoInfo from './components/VideoInfo';
-import FormatSelector from './components/FormatSelector';
+import { Header } from './components/Header';
+import { Hero } from './components/Hero';
+import { VideoInfo } from './components/VideoInfo';
+import { FormatSelector } from './components/FormatSelector';
 import { analyzeUrl, startDownload, getDownloadUrl } from './utils/api';
+import { isAdultUrl } from './utils/adultSites';
 import type { Metadata } from './utils/api';
-
-// YouTube's own domains + youtu.be, and the other video hosts FlowFetch supports.
-const VIDEO_HOSTS = ['youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com', 'facebook.com', 'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'twitch.tv', 'reddit.com'];
-const isAdultUrl = (url: string) => /pornhub|xvideos|xhamster|redtube|xnxx|onlyfans|erome|spankbang/i.test(url);
+import './index.css';
 
 interface PendingJob { formatId: string; jobId: string; streamMode: string; }
 
 export default function App() {
   const [metadata, setMetadata] = useState<Metadata | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [ageConfirmed, setAgeConfirmed] = useState(false);
+  // Adult-link 18+ gate (before Analyze): URL that is waiting for confirmation.
   const [pendingAdultUrl, setPendingAdultUrl] = useState<string | null>(null);
+  // URL the user already confirmed as 18+ in this session.
   const [adultConfirmedUrl, setAdultConfirmedUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isPrefetching, setIsPrefetching] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [isPrefetching, setIsPrefetching] = useState(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Real Analyze loading: a bar that creeps toward 85% while the server works and only reaches 100% when the real result arrives.
   const [analyzeProgress, setAnalyzeProgress] = useState<number | null>(null);
   const [analyzeStage, setAnalyzeStage] = useState('');
   const pendingJobRef = useRef<PendingJob | null>(null);
@@ -42,11 +43,12 @@ export default function App() {
   const showError = (msg: string) => { setErrorMsg(msg); };
 
   useEffect(() => {
-    const handlePopState = () => {
-      const state = window.history.state;
-      if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); setAgeConfirmed(false); setPendingAdultUrl(null); }
-      else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; setIsDownloading(false); prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state;
+      if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); }
+      else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; setIsDownloading(false);  prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
     };
+    if (!window.history.state) { window.history.replaceState({ page: 'home' }, "", window.location.pathname); }
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
@@ -56,21 +58,17 @@ export default function App() {
   const handleAnalyze = async (url: string) => {
     if (isAdultUrl(url) && adultConfirmedUrl !== url) {
       setPendingAdultUrl(url);
-      setAgeConfirmed(false);
-      setMetadata(null);
-      setErrorMsg(null);
       return;
     }
-    setAgeConfirmed(true);
-    doAnalyze(url);
+    await doAnalyze(url);
   };
 
-  const confirmAdult = () => {
+  const confirmAdult = async () => {
+    if (!pendingAdultUrl) return;
     const url = pendingAdultUrl;
-    setPendingAdultUrl(null);
-    setAgeConfirmed(true);
     setAdultConfirmedUrl(url);
-    if (url) doAnalyze(url);
+    setPendingAdultUrl(null);
+    await doAnalyze(url);
   };
 
   const cancelAdult = () => {
@@ -115,7 +113,8 @@ export default function App() {
   };
 
   const handleReset = () => {
-    stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; setIsDownloading(false); prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); downloadTimeoutRef.current = null;
+    stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; setIsDownloading(false); prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null);
+    if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
 
@@ -232,32 +231,34 @@ export default function App() {
     <div className="app">
       <Header onLogoClick={handleReset} />
       <main className="main-content container mb-16">
-        {toastMsg && (<div className="toast">{toastMsg}</div>)}
-        {errorMsg && (<div className="error-banner" role="alert">{errorMsg}</div>)}
+        {toastMsg && (<div className="toast-ok">{toastMsg}</div>)}
+        {errorMsg && (<div className="toast-err">{errorMsg}</div>)}
         {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} analyzeProgress={analyzeProgress} analyzeStage={analyzeStage} />)}
         {pendingAdultUrl && !metadata && (
-          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
-              <h2 className="text-xl font-bold mb-3">18+ content — are you 18 or older?</h2>
-              <p className="text-gray-600 text-sm mb-4">This video is from an adult site. You'll need to confirm your age before we can continue.</p>
-              <div className="flex gap-3">
-                <button onClick={confirmAdult} className="bg-[#FF4D6D] text-white px-4 py-2 rounded-lg flex-1 font-medium">I'm 18 or older — Continue</button>
-                <button onClick={cancelAdult} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex-1 font-medium">Cancel</button>
-              </div>
+          <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
+            <h2 className="text-2xl font-bold mb-4">Are you 18+?</h2>
+            <p className="text-muted mb-2">This link is from an adult site. This content is for adults only.</p>
+            <p className="text-muted mb-8">Please confirm that you are at least 18 years old to continue.</p>
+            <div className="flex gap-4 justify-center">
+              <button className="btn btn-outline" onClick={cancelAdult}>No, I am under 18</button>
+              <button className="btn btn-primary" onClick={confirmAdult}>Yes, I am 18 or older</button>
             </div>
           </div>
         )}
         {metadata && (
-          <div id="results" className="results">
+          <div className="analysis-results">
             {metadata.age_limit && metadata.age_limit >= 18 && !ageConfirmed ? (
-              <div className="age-gate">
-                <h2 className="text-xl font-bold mb-3">18+ content — are you 18 or older?</h2>
-                <p className="text-gray-600 text-sm mb-4">This video is marked 18+ by YouTube. Confirm your age to see the download options.</p>
-                <button onClick={() => setAgeConfirmed(true)} className="bg-[#FF4D6D] text-white px-4 py-2 rounded-lg font-medium">I'm 18 or older — Show download options</button>
+              <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
+                <h2 className="text-2xl font-bold mb-4">Age Confirmation Required</h2>
+                <p className="text-muted mb-8">This content is age-restricted. Please confirm that you are at least 18 years old to proceed.</p>
+                <div className="flex gap-4 justify-center">
+                  <button className="btn btn-outline" onClick={handleReset}>Cancel</button>
+                  <button className="btn btn-primary" onClick={() => setAgeConfirmed(true)}>I am 18 or older</button>
+                </div>
               </div>
             ) : (
               <>
-                <VideoInfo title={metadata.title} thumbnail={metadata.thumbnail} duration={metadata.duration} uploader={metadata.uploader} site={metadata.site} description={metadata.description} onReset={handleReset} />
+                <VideoInfo metadata={metadata} onReset={handleReset} />
                 <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} />
               </>
             )}
