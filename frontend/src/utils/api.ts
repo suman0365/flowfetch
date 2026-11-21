@@ -61,7 +61,7 @@ export const getDownloadUrl = (jobId: string) => {
   return `${BACKEND_DIRECT}/api/download/${jobId}`;
 };
 
-export const getDownloadStatus = async (jobId: string): Promise<{ status: 'ready' | 'failed' | 'processing'; filename?: string; percent?: number; downloaded?: string; total?: string; speed?: string; eta?: string }> => {
+export const getDownloadStatus = async (jobId: string): Promise<{ status: 'ready' | 'failed' | 'processing'; filename?: string; reason?: string; percent?: number; downloaded?: string; total?: string; speed?: string; eta?: string }> => {
   const res = await fetch(`${API_BASE}/api/download/status/${jobId}`);
   return res.json();
 };
