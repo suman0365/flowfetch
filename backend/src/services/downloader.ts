@@ -1,5 +1,6 @@
-import { spawn, execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { config } from '../config/env';
 import EventEmitter from 'events';
@@ -9,33 +10,39 @@ import { attemptsFor, baseArgs } from './ytdlpArgs';
 /**
  * StreamMode — how a download job is served to the browser.
  *
- * 'direct'       – Single stream (video-only, audio-only, or a progressive
- *                  combined format such as YouTube 18/22). yt-dlp stdout is
- *                  piped straight to the HTTP response. The size is known
- *                  exactly, so Content-Length is set and Chrome shows a
- *                  true 0–100% download progress in its Downloads.
+ * 'direct'     – Single stream (video-only, audio-only, or a progressive
+ *                combined format such as YouTube 18/22). yt-dlp stdout is
+ *                piped straight to the HTTP response. The size is known
+ *                exactly, so Content-Length is set and Chrome shows a
+ *                true 0–100% download progress in its Downloads.
  *
- * 'stream_merge' – DASH video+audio (two separate streams). Two yt-dlp
- *                  processes stream the raw video and audio into FFmpeg,
- *                  which muxes them into a fragmented MP4 (or Matroska
- *                  for webm/mkv) on stdout, piped straight to the HTTP
- *                  response. Headers are sent immediately so the browser
- *                  download entry appears at once; the final size is NOT
- *                  known in advance (the merge adds container overhead),
- *                  so no Content-Length is sent and Chrome shows bytes
- *                  counting up instead of a percentage.
+ * 'disk_build' – DASH video+audio (two separate streams). The file is
+ *                built on the server disk first (ONE yt-dlp process at a
+ *                time, which downloads both streams and lets FFmpeg merge
+ *                them), then streamed to the browser. The response headers
+ *                are sent BEFORE the build starts, so the download entry
+ *                appears in Chrome Downloads the instant the user taps
+ *                Download — there is no site-side "Preparing..." phase and
+ *                no second click. The download sits at 0% while the file
+ *                builds, then fills 0–100% natively in the browser.
  *
- * There is deliberately NO disk-buffered mode any more (v13, 2026-11-21):
- * Suman asked for the download to start instantly in the browser's own
- * Downloads, not a "Preparing... 0–100%" phase on the site followed by
- * a second click. The old yt-dlp built-in merger is NOT used here, because
- * merging to a pipe makes yt-dlp emit MPEG-TS mislabelled as MP4 —
- * verified locally 2026-11-21: first bytes are 0x47 sync + "FFmpeg
- * Service01", ffprobe says format_name=mpegts. The dual-process +
- * FFmpeg pipeline below produces a genuine fragmented MP4 (ftypiso5,
- * decodes cleanly end to end, h264 + aac).
+ * Why disk-build and not a live merge (v13, 2026-11-21)? The live merge
+ * ran TWO yt-dlp processes concurrently, each spawning a Deno JS runtime
+ * for extraction, plus FFmpeg — and that blew past Render's 512 MB free
+ * tier on EVERY merge (OOM-restarted at 10:15, 10:18, 10:27, 10:29 IST,
+ * even for an 8 MB 144p file). One yt-dlp at a time fits comfortably,
+ * and this exact disk build already proved itself: Suman's Big Buck
+ * Bunny 240p file built fine on the server on 2026-11-21 (32 MB, valid
+ * MP4, served HTTP 200). The live merge also has no fragment retry, so
+ * a single mid-download 403 kills the whole pipe; the disk build lets
+ * yt-dlp retry fragments internally.
+ *
+ * The old yt-dlp built-in merger to a pipe is NOT used anywhere: merging
+ * to stdout makes yt-dlp emit MPEG-TS mislabelled as MP4 (verified
+ * 2026-11-21: first bytes 0x47 sync + "FFmpeg Service01", ffprobe
+ * format_name=mpegts).
  */
-export type StreamMode = 'direct' | 'stream_merge';
+export type StreamMode = 'direct' | 'disk_build';
 
 export interface JobProgress {
   percent: number;
@@ -59,18 +66,14 @@ export interface Job {
   started?: boolean;
   child?: any;
   timeout?: NodeJS.Timeout;
+  // Disk-build state (disk_build mode only).
+  buildPromise?: Promise<{ ok: boolean; filePath?: string }>;
+  filePath?: string;
 }
 
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
-
-const checkFFmpeg = (): Promise<boolean> =>
-  new Promise((resolve) => {
-    execFile('ffmpeg', ['-version'], (error) => {
-      resolve(!error);
-    });
-  });
 
 /** Map container extension to a proper Content-Type value. */
 function contentTypeFor(ext: string): string {
@@ -112,12 +115,13 @@ class DownloaderService extends EventEmitter {
   createJob(url: string, format: NormalizedFormat, title: string = 'video'): { id: string; streamMode: StreamMode } {
     const id = randomUUID();
 
-    // Single stream → direct pipe. Two streams (video+audio) → live merge.
+    // Single stream → direct pipe. Two streams (video+audio) → build on
+    // disk first, then stream the finished file (see the header comment).
     // A progressive combined format (YouTube 18/22) has only a
     // videoFormatId, so it correctly lands in 'direct'.
     let streamMode: StreamMode = 'direct';
     if (format.type === 'video+audio' && format.videoFormatId && format.audioFormatId) {
-      streamMode = 'stream_merge';
+      streamMode = 'disk_build';
     }
 
     const job: Job = {
@@ -172,7 +176,7 @@ class DownloaderService extends EventEmitter {
     // header bytes); the RFC 5987 filename* carries the real title.
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(fullFilename)}`);
     res.setHeader('Cache-Control', 'no-store');
-    // Exact size is known only for a single stream. For a live merge the
+    // Exact size is known only for a single stream. For a disk build the
     // size is unknown until the merge finishes, so no Content-Length:
     // chunked transfer, Chrome shows bytes counting up. Never send a
     // guessed Content-Length — a wrong value truncates or hangs the file.
@@ -181,8 +185,9 @@ class DownloaderService extends EventEmitter {
     }
     res.flushHeaders();
 
-    // Disable idle timeout: a merge can take a while before the first
-    // bytes flow, and Node's default 5s idle socket timeout would kill it.
+    // Disable idle timeout: a disk build can take a while before the
+    // first bytes flow, and Node's default 5s idle socket timeout would
+    // kill it.
     const sock = (res as any).socket;
     if (sock) {
       sock.setTimeout(0);
@@ -291,12 +296,13 @@ class DownloaderService extends EventEmitter {
   }
 
   // -----------------------------------------------------------------------
-  // Live-merge delivery — GET /api/download/:id for video+audio formats.
-  // Two yt-dlp processes stream the raw video and audio into FFmpeg,
-  // which muxes a fragmented MP4 (or Matroska for webm/mkv) to stdout.
+  // Disk-build delivery — GET /api/download/:id for video+audio formats.
+  // Headers go out immediately (the download entry appears in Chrome at
+  // once), the merged file is built on disk, then streamed to the
+  // browser. One tap, no second click, no site-side Preparing phase.
   // -----------------------------------------------------------------------
 
-  async startMergeStream(id: string, res: any): Promise<void> {
+  async startDiskBuildStream(id: string, res: any): Promise<void> {
     const job = this.jobs.get(id);
     if (!job) {
       if (!res.headersSent) res.status(404).json({ success: false, error: 'Job not found or expired' });
@@ -304,111 +310,151 @@ class DownloaderService extends EventEmitter {
     }
     this.markStarted(job);
 
-    const hasFFmpeg = await checkFFmpeg();
-    if (!hasFFmpeg) {
-      if (!res.headersSent) res.status(500).json({ success: false, error: 'FFmpeg not found on server.' });
-      return;
-    }
-
     // Headers first: the download entry appears in Chrome instantly.
     this.sendDownloadHeaders(job, res, false);
     this.updateProgress(id, { status: 'downloading' });
 
-    const attempts = attemptsFor(job.url);
-    let bytesWritten = 0;
-    for (let i = 0; i < attempts.length; i++) {
-      if (res.destroyed || res.writableEnded) break;
-      const attempt = attempts[i];
-      console.log(`[FlowFetch] merge-stream attempt: ${attempt.name} for job ${id}`);
-      const r = await this.runMergeAttempt(job, attempt, res);
-      bytesWritten += r.bytes;
-      if (r.ok) {
-        this.updateProgress(id, { status: 'complete', percent: 100 });
-        return;
+    // If the browser goes away mid-build, stop the build so it does not
+    // burn the free instance's CPU/RAM for nothing.
+    let cancelled = false;
+    res.once('close', () => {
+      cancelled = true;
+      if (job.child && !job.child.killed) {
+        try { job.child.kill('SIGKILL'); } catch { /* already dead */ }
       }
-      // A partial file is already on its way to the browser; retrying
-      // would append a second stream to the same response and corrupt it.
-      if (bytesWritten > 0) break;
-      console.warn(`[FlowFetch] merge-stream attempt ${attempt.name} failed for job ${id}, trying next client`);
+    });
+
+    const result = await this.runDiskBuild(job);
+    if (cancelled || res.destroyed || res.writableEnded) return;
+
+    if (!result.ok || !result.filePath || !fs.existsSync(result.filePath)) {
+      this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Download process failed.' });
+      if (!res.writableEnded && !res.destroyed) res.end();
+      return;
     }
 
-    this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Download process failed.' });
-    if (!res.writableEnded && !res.destroyed) res.end();
+    // Stream the finished file to the browser. (Content-Length was not
+    // sent — headers went out before the build — so this is chunked and
+    // Chrome shows bytes counting up.)
+    job.filePath = result.filePath;
+    const stream = fs.createReadStream(result.filePath);
+    stream.on('error', () => {
+      this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Could not read built file.' });
+      if (!res.writableEnded && !res.destroyed) res.end();
+    });
+    stream.on('end', () => {
+      this.updateProgress(id, { status: 'complete', percent: 100 });
+      if (!res.writableEnded && !res.destroyed) res.end();
+    });
+    stream.pipe(res);
   }
 
   /**
-   * One merge attempt: yt-dlp (video) + yt-dlp (audio) + FFmpeg.
-   * The two yt-dlp stdouts are piped into FFmpeg's extra file
-   * descriptors 3 and 4; FFmpeg's stdout is piped to the HTTP response.
-   * If either yt-dlp fails before any bytes reach the browser, fail fast
-   * so the next client can be tried without waiting for the other
-   * stream to finish downloading.
+   * Build the merged file on disk. ONE yt-dlp process at a time (with its
+   * FFmpeg merge) — this is what fits in Render's 512 MB and what already
+   * proved itself on 2026-11-21. Clients are tried in order; yt-dlp
+   * retries fragments internally, so a brief block does not kill the
+   * whole download the way a live pipe does.
    */
-  private runMergeAttempt(
+  private runDiskBuild(job: Job): Promise<{ ok: boolean; filePath?: string }> {
+    if (job.buildPromise) return job.buildPromise;
+    job.buildPromise = this.doDiskBuild(job);
+    return job.buildPromise;
+  }
+
+  private async doDiskBuild(job: Job): Promise<{ ok: boolean; filePath?: string }> {
+    const { format, url } = job;
+    const filesDir = path.join(config.tempDir, 'files');
+    fs.mkdirSync(filesDir, { recursive: true });
+    const outPath = path.join(filesDir, `${job.id}.${format.ext}`);
+    const mergeFormat = format.ext === 'webm' || format.ext === 'mkv' ? 'webm' : 'mp4';
+
+    const attempts = attemptsFor(url);
+    for (let i = 0; i < attempts.length; i++) {
+      const attempt = attempts[i];
+      console.log(`[FlowFetch] disk-build attempt: ${attempt.name} for job ${job.id}`);
+      const ok = await this.runDiskBuildAttempt(job, attempt, outPath, mergeFormat);
+      if (ok && fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+        this.updateProgress(job.id, {
+          status: 'complete',
+          percent: 100,
+          filename: path.basename(outPath),
+        });
+        return { ok: true, filePath: outPath };
+      }
+      // A failed attempt may leave a partial file behind; remove it so
+      // the next client starts clean.
+      try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
+      console.warn(`[FlowFetch] disk-build attempt ${attempt.name} failed for job ${job.id}, trying next client`);
+    }
+
+    this.updateProgress(job.id, { status: 'failed', error: 'DOWNLOAD_FAILED: Download process failed.' });
+    return { ok: false };
+  }
+
+  /** One yt-dlp client attempt for a disk build. Resolves false on failure. */
+  private runDiskBuildAttempt(
     job: Job,
     attempt: { name: string; extractorArgs?: string },
-    res: any,
-  ): Promise<{ ok: boolean; bytes: number }> {
+    outPath: string,
+    mergeFormat: string,
+  ): Promise<boolean> {
     return new Promise((resolve) => {
       const { format, url } = job;
-      const vArgs = ['-o', '-', ...baseArgs(attempt, url), '--newline', '-f', format.videoFormatId!, url];
-      const aArgs = ['-o', '-', ...baseArgs(attempt, url), '--newline', '-f', format.audioFormatId!, url];
-      const vChild = spawn('yt-dlp', vArgs);
-      const aChild = spawn('yt-dlp', aArgs);
-
-      // Fragmented MP4 for .mp4 (moov up front, playable while streaming);
-      // Matroska for .webm/.mkv (no movflags needed, streams natively).
-      const isWebm = format.ext === 'webm' || format.ext === 'mkv';
-      const ffArgs = isWebm
-        ? ['-v', 'error', '-i', 'pipe:3', '-i', 'pipe:4', '-map', '0:v', '-map', '1:a', '-c', 'copy', '-f', 'matroska', 'pipe:1']
-        : ['-v', 'error', '-i', 'pipe:3', '-i', 'pipe:4', '-map', '0:v', '-map', '1:a', '-c', 'copy', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-f', 'mp4', 'pipe:1'];
-      const ff = spawn('ffmpeg', ffArgs, { stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] });
-      job.child = ff;
-
-      // Feed the two raw streams into FFmpeg's extra fds.
-      vChild.stdout.pipe((ff.stdio as any)[3]);
-      aChild.stdout.pipe((ff.stdio as any)[4]);
-
-      let bytes = 0;
+      const args: string[] = [
+        '-o', outPath,
+        ...baseArgs(attempt, url),
+        '--newline',
+        '-f', `${format.videoFormatId}+${format.audioFormatId}`,
+        '--merge-output-format', mergeFormat,
+        url,
+      ];
+      const child = spawn('yt-dlp', args);
+      job.child = child;
       let settled = false;
       let stderrOutput = '';
+      // Cap a single build attempt at 9 minutes so a stuck download does
+      // not hold the browser's download entry open forever.
+      const cap = setTimeout(() => {
+        if (!settled) {
+          try { if (!child.killed) child.kill('SIGKILL'); } catch { /* already dead */ }
+          done(false);
+        }
+      }, 9 * 60 * 1000);
       const done = (ok: boolean) => {
         if (settled) return;
         settled = true;
-        [vChild, aChild, ff].forEach((c) => {
-          try { if (!c.killed) c.kill('SIGKILL'); } catch { /* already dead */ }
-        });
-        resolve({ ok, bytes });
+        clearTimeout(cap);
+        resolve(ok);
       };
-
-      const collectErr = (data: Buffer) => { stderrOutput += data.toString(); };
-      vChild.stderr.on('data', collectErr);
-      aChild.stderr.on('data', collectErr);
-      ff.stderr!.on('data', collectErr);
-
-      ff.stdout!.on('data', (chunk: Buffer) => {
-        bytes += chunk.length;
-        if (!res.writableEnded && !res.destroyed) res.write(chunk);
+      const parseProgress = (text: string) => {
+        // yt-dlp writes its [download] lines to stdout (verified
+        // 2026-11-21: 31 lines to stdout, 0 to stderr). Parse both to
+        // be safe.
+        const m = text.match(/\[download\]\s+([\d.]+)% of\s+([\d.]+[KMGT]iB)?/i);
+        if (m) {
+          this.updateProgress(job.id, {
+            status: 'downloading',
+            percent: parseFloat(m[1]),
+            total: m[2] || job.progress.total,
+          });
+        }
+      };
+      child.stdout.on('data', (data: Buffer) => parseProgress(data.toString()));
+      child.stderr.on('data', (data: Buffer) => {
+        const output = data.toString();
+        stderrOutput += output;
+        parseProgress(output);
       });
-      ff.on('close', (code) => {
+      child.on('close', (code) => {
         if (settled) return; // already resolved (e.g. browser closed first)
-        if (code === 0) {
-          if (!res.writableEnded && !res.destroyed) res.end();
-          done(true);
-        } else {
-          console.warn(`[FlowFetch] merge ffmpeg exited ${code} for job ${job.id}:`, stderrOutput.slice(-400));
+        if (code === 0) done(true);
+        else {
+          console.warn(`[FlowFetch] disk-build ${attempt.name} exited ${code} for job ${job.id}:`, stderrOutput.slice(-300));
           done(false);
         }
       });
-      ff.on('error', () => done(false));
-      vChild.on('error', () => done(false));
-      aChild.on('error', () => done(false));
-      // Fail fast: if one side errors before any bytes were produced,
-      // don't wait for the other side's download to finish first.
-      vChild.on('close', (code) => { if (code !== 0 && bytes === 0) done(false); });
-      aChild.on('close', (code) => { if (code !== 0 && bytes === 0) done(false); });
-      // Browser closed the download (user cancelled / navigated away).
-      res.once('close', () => done(false));
+      child.on('error', () => done(false));
     });
   }
 
