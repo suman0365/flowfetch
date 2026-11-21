@@ -19,12 +19,19 @@ import { attemptsFor, baseArgs } from './ytdlpArgs';
  * 'disk_build' – DASH video+audio (two separate streams). The file is
  *                built on the server disk first (ONE yt-dlp process at a
  *                time, which downloads both streams and lets FFmpeg merge
- *                them), then streamed to the browser. The response headers
- *                are sent BEFORE the build starts, so the download entry
- *                appears in Chrome Downloads the instant the user taps
- *                Download — there is no site-side "Preparing..." phase and
- *                no second click. The download sits at 0% while the file
- *                builds, then fills 0–100% natively in the browser.
+ *                them), then streamed to the browser. v13.3: the build
+ *                runs BEFORE the response headers go out, so the headers
+ *                carry the EXACT Content-Length of the finished file and
+ *                Chrome shows a true 0–100% bar in Downloads (Suman,
+ *                2026-11-21: instant is not required, but the download
+ *                must happen in the browser with a percentage like a
+ *                normal browser download). One tap, no second click —
+ *                the browser is still waiting on the same response the
+ *                tap opened; the entry appears when the build finishes.
+ *                Trade-off: nothing shows in Downloads during the build
+ *                (30s–3min), and a very long build can outlast the
+ *                connection — but the build survives on the server
+ *                (v13.2) and a retry tap streams the finished file.
  *
  * Why disk-build and not a live merge (v13, 2026-11-21)? The live merge
  * ran TWO yt-dlp processes concurrently, each spawning a Deno JS runtime
@@ -50,6 +57,14 @@ import { attemptsFor, baseArgs } from './ytdlpArgs';
  * survives a dropped connection). Suman's rule: any size at 0 cost,
  * slow is fine. The only remaining limits are the server's disk space
  * and how long a build/connection can survive.
+ *
+ * v13.3 (2026-11-21): BUILD FIRST, headers second, for disk_build.
+ * The old headers-first flow could not set Content-Length (size
+ * unknown until the merge finishes), so Chrome showed only
+ * "Downloading..." with no percentage — Suman's phone showed exactly
+ * that on 2026-11-21. Now the size is the built file's real size.
+ * A failed build now returns a real error status instead of a
+ * silent 0-byte file, because no headers have been sent yet.
  */
 export type StreamMode = 'direct' | 'disk_build';
 
@@ -166,13 +181,15 @@ class DownloaderService extends EventEmitter {
   }
 
   // -----------------------------------------------------------------------
-  // Shared response setup — headers go out FIRST so the browser download
-  // entry appears in Chrome Downloads immediately, before the first byte
-  // of media exists. That is the whole point of v13: no site-side
-  // "Preparing..." phase, the download lives in the browser from tap one.
+  // Shared response setup — sends the attachment headers. For 'direct'
+  // they go out first (the download entry appears in Chrome instantly).
+  // For 'disk_build' (v13.3) they go out AFTER the build, carrying the
+  // exact Content-Length of the finished file, so Chrome shows a real
+  // 0–100% bar. Either way the download lives in the browser from tap
+  // one — no site-side "Preparing..." phase, no second click.
   // -----------------------------------------------------------------------
 
-  private sendDownloadHeaders(job: Job, res: any, knownSize: boolean): void {
+  private sendDownloadHeaders(job: Job, res: any, knownSize: boolean, exactSize?: number): void {
     const { format } = job;
     const safeTitle = sanitizeFilename(job.title);
     const resolutionSuffix = format.resolution ? ` - ${format.resolution}` : '';
@@ -185,11 +202,14 @@ class DownloaderService extends EventEmitter {
     // header bytes); the RFC 5987 filename* carries the real title.
     res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(fullFilename)}`);
     res.setHeader('Cache-Control', 'no-store');
-    // Exact size is known only for a single stream. For a disk build the
-    // size is unknown until the merge finishes, so no Content-Length:
-    // chunked transfer, Chrome shows bytes counting up. Never send a
-    // guessed Content-Length — a wrong value truncates or hangs the file.
-    if (knownSize && format.filesize && format.filesize > 0) {
+    // Content-Length: for a disk build (v13.3) the caller passes the
+    // built file's exact size — that is what makes Chrome show a real
+    // 0–100%. For a single stream the size comes from the format
+    // metadata. Never send a guessed Content-Length — a wrong value
+    // truncates or hangs the file.
+    if (exactSize && exactSize > 0) {
+      res.setHeader('Content-Length', exactSize);
+    } else if (knownSize && format.filesize && format.filesize > 0) {
       res.setHeader('Content-Length', format.filesize);
     }
     res.flushHeaders();
@@ -306,9 +326,10 @@ class DownloaderService extends EventEmitter {
 
   // -----------------------------------------------------------------------
   // Disk-build delivery — GET /api/download/:id for video+audio formats.
-  // Headers go out immediately (the download entry appears in Chrome at
-  // once), the merged file is built on disk, then streamed to the
-  // browser. One tap, no second click, no site-side Preparing phase.
+  // v13.3: the merged file is built on disk FIRST, then the headers go
+  // out with the exact Content-Length, then the file streams to the
+  // browser. One tap, no second click, no site-side Preparing phase —
+  // and Chrome shows a real 0–100% bar.
   // -----------------------------------------------------------------------
 
   async startDiskBuildStream(id: string, res: any): Promise<void> {
@@ -319,17 +340,23 @@ class DownloaderService extends EventEmitter {
     }
     this.markStarted(job);
 
-    // Headers first: the download entry appears in Chrome instantly.
-    this.sendDownloadHeaders(job, res, false);
-    this.updateProgress(id, { status: 'downloading' });
+    // v13.3: BUILD FIRST, headers second. The size is only known once
+    // the merge finishes, so the headers (with the exact Content-Length
+    // of the built file) go out AFTER the build — that is what makes
+    // Chrome show a true 0–100% bar. One tap, no second click: the
+    // browser is still waiting on the same response the tap opened.
+    // Trade-off: nothing shows in Downloads during the build, and a
+    // very long build can outlast the connection — but the build
+    // survives on the server (v13.2) and a retry tap streams the
+    // finished file straight away.
 
     // If the browser goes away mid-build (user cancelled, connection
     // dropped on a long build), do NOT kill the build: let it finish on
-    // the server so a retry tap can stream the finished file straight
-    // away instead of rebuilding from scratch. The buildPromise is
-    // cached on the job, so a later GET for the same job reuses it.
-    // (Suman's rule, 2026-11-21: no size limit, slow is fine — a big
-    // file's build can outlast the browser connection.)
+    // the server so a retry tap can stream the finished file instead of
+    // rebuilding from scratch. The buildPromise is cached on the job,
+    // so a later GET for the same job reuses it. (Suman's rule,
+    // 2026-11-21: no size limit, slow is fine — a big file's build can
+    // outlast the browser connection.)
     let cancelled = false;
     res.once('close', () => {
       cancelled = true;
@@ -340,14 +367,20 @@ class DownloaderService extends EventEmitter {
 
     if (!result.ok || !result.filePath || !fs.existsSync(result.filePath)) {
       this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Download process failed.' });
-      if (!res.writableEnded && !res.destroyed) res.end();
+      // No headers have been sent yet, so a real error status is
+      // possible now — the browser shows a failed download instead of
+      // a silent 0-byte file.
+      if (!res.headersSent) res.status(502).json({ success: false, error: 'Download failed. Please try again.' });
+      else if (!res.writableEnded && !res.destroyed) res.end();
       return;
     }
 
-    // Stream the finished file to the browser. (Content-Length was not
-    // sent — headers went out before the build — so this is chunked and
-    // Chrome shows bytes counting up.)
+    // Exact size of the built file → real 0–100% in the browser.
     job.filePath = result.filePath;
+    const size = fs.statSync(result.filePath).size;
+    this.sendDownloadHeaders(job, res, false, size);
+    this.updateProgress(id, { status: 'downloading' });
+
     const stream = fs.createReadStream(result.filePath);
     stream.on('error', () => {
       this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Could not read built file.' });
