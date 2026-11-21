@@ -1,84 +1,76 @@
 import { useState, useRef, useEffect } from 'react';
-import { Header } from './components/Header';
-import { Hero } from './components/Hero';
-import { VideoInfo } from './components/VideoInfo';
-import { FormatSelector } from './components/FormatSelector';
-import { analyzeUrl, startDownload, getDownloadUrl, getDownloadStatus } from './utils/api';
-import { isAdultUrl } from './utils/adultSites';
+import Header from './components/Header';
+import Hero from './components/Hero';
+import VideoInfo from './components/VideoInfo';
+import FormatSelector from './components/FormatSelector';
+import { analyzeUrl, startDownload, getDownloadUrl } from './utils/api';
 import type { Metadata } from './utils/api';
-import './index.css';
+
+// YouTube's own domains + youtu.be, and the other video hosts FlowFetch supports.
+const VIDEO_HOSTS = ['youtube.com', 'youtu.be', 'tiktok.com', 'instagram.com', 'facebook.com', 'x.com', 'twitter.com', 'vimeo.com', 'dailymotion.com', 'twitch.tv', 'reddit.com'];
+const isAdultUrl = (url: string) => /pornhub|xvideos|xhamster|redtube|xnxx|onlyfans|erome|spankbang/i.test(url);
+
 interface PendingJob { formatId: string; jobId: string; streamMode: string; }
+
 export default function App() {
   const [metadata, setMetadata] = useState<Metadata | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [ageConfirmed, setAgeConfirmed] = useState(false);
-  // Adult-link 18+ gate (before Analyze): URL that is waiting for confirmation.
   const [pendingAdultUrl, setPendingAdultUrl] = useState<string | null>(null);
-  // URL the user already confirmed as 18+ in this session.
   const [adultConfirmedUrl, setAdultConfirmedUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
   const [isPrefetching, setIsPrefetching] = useState(false);
-    // Live server-side progress while a merged file is prepared (0-100), shown on the button so it never looks frozen.
-    const [preparingPercent, setPreparingPercent] = useState<number | null>(null);
-  // "Ready" / "failed" banner state, shown RIGHT ABOVE the Download
-  // button (not only as a toast at the top of the page): on 2026-11-21
-  // Suman's Big Buck Bunny 240p file finished building on the server,
-  // but the "Ready! Click Download once more" toast rendered at the top
-  // of the page while he was scrolled down at the button — he never saw
-  // it, never clicked again, and no file ever reached his phone.
-  const [downloadReady, setDownloadReady] = useState(false);
-  const [downloadFailMsg, setDownloadFailMsg] = useState<string | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  // Real Analyze loading: a bar that creeps toward 85% while the server works and only reaches 100% when the real result arrives.
+  const [isDownloading, setIsDownloading] = useState(false);
   const [analyzeProgress, setAnalyzeProgress] = useState<number | null>(null);
   const [analyzeStage, setAnalyzeStage] = useState('');
   const pendingJobRef = useRef<PendingJob | null>(null);
-  const readyJobRef = useRef<PendingJob | null>(null);
-  const pollingJobRef = useRef<string | null>(null);
-    const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const stopPolling = () => {
-          if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-          pollTimerRef.current = null;
-          pollingJobRef.current = null;
-    };
   const prefetchingFormatRef = useRef<string | null>(null);
   const downloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const analyzeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const stopAnalyzeProgress = () => {
     if (analyzeTimerRef.current) clearInterval(analyzeTimerRef.current);
     analyzeTimerRef.current = null;
     setAnalyzeProgress(null);
     setAnalyzeStage('');
   };
+
   const showToast = (msg: string, durationMs = 5000) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), durationMs); };
+
   // No auto-clear: the 8-second timeout made failures look silent again. Cleared by the next Analyze / Reset, which already set errorMsg to null.
-  const showError = (msg: string) => { setErrorMsg(msg);  };
+  const showError = (msg: string) => { setErrorMsg(msg); };
+
   useEffect(() => {
-    const handlePopState = (event: PopStateEvent) => {
-      const state = event.state;
-      if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); }
-          else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false);  prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
+    const handlePopState = () => {
+      const state = window.history.state;
+      if (state && state.page === 'results' && state.metadata) { setMetadata(state.metadata); setAgeConfirmed(false); setPendingAdultUrl(null); }
+      else { setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); pendingJobRef.current = null; setIsDownloading(false); prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); }
     };
-    if (!window.history.state) { window.history.replaceState({ page: 'home' }, "", window.location.pathname); }
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
   const sanitizeFilename = (name: string) => name.replace(/[<>:\"/\\|?*\x00-\x1F]/g, '').trim() || 'video';
+
   const handleAnalyze = async (url: string) => {
     if (isAdultUrl(url) && adultConfirmedUrl !== url) {
       setPendingAdultUrl(url);
+      setAgeConfirmed(false);
+      setMetadata(null);
+      setErrorMsg(null);
       return;
     }
-    await doAnalyze(url);
+    setAgeConfirmed(true);
+    doAnalyze(url);
   };
 
-  const confirmAdult = async () => {
-    if (!pendingAdultUrl) return;
+  const confirmAdult = () => {
     const url = pendingAdultUrl;
-    setAdultConfirmedUrl(url);
     setPendingAdultUrl(null);
-    await doAnalyze(url);
+    setAgeConfirmed(true);
+    setAdultConfirmedUrl(url);
+    if (url) doAnalyze(url);
   };
 
   const cancelAdult = () => {
@@ -92,15 +84,10 @@ export default function App() {
     setMetadata(null);
     setAgeConfirmed(false);
     pendingJobRef.current = null;
-    readyJobRef.current = null;
-      stopPolling();
-      setPreparingPercent(null);
-      setIsDownloading(false);
-    setDownloadReady(false);
-    setDownloadFailMsg(null);
+    setIsDownloading(false);
     prefetchingFormatRef.current = null;
-        try {
-          const startedAt = Date.now();
+    try {
+      const startedAt = Date.now();
       setAnalyzeProgress(6);
       setAnalyzeStage('Sending your link...');
       analyzeTimerRef.current = setInterval(() => {
@@ -109,86 +96,41 @@ export default function App() {
         setAnalyzeStage(elapsed > 20 ? 'Taking longer than usual — the video host is slow to answer...' : elapsed > 8 ? 'Still reading — the server is working through the video...' : 'Reading video details...');
       }, 500);
       const data = await analyzeUrl(url);
-        if (analyzeTimerRef.current) clearInterval(analyzeTimerRef.current);
+      if (analyzeTimerRef.current) clearInterval(analyzeTimerRef.current);
       setAnalyzeProgress(100);
       setAnalyzeStage(`Found ${data.formats.length} options`);
       setMetadata(data);
-      window.history.pushState({ page: 'results', metadata: data }, "", "#results"); /* On mobile the results can sit below the fold after the Hero unmounts, so scroll them into view. */ requestAnimationFrame(() => { document.querySelector('.analysis-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+      window.history.pushState({ page: 'results', metadata: data }, "", "#results"); /* On mobile the results can sit below the fold after the Hero unmounts, so scroll them into view. */ requestAnimationFrame(() => document.getElementById('results')?.scrollIntoView({ behavior: 'smooth' }));
     } catch (err) {
       stopAnalyzeProgress();
-            const raw = err instanceof Error ? err.message : 'Analysis failed';       
-      const friendly = /not a bot|Sign in to confirm|Failed to extract any player response|EXTRACTION_BLOCKED/i.test(raw)         
-          ? 'YouTube blocked this video from our server (bot check). Try a non-YouTube public link, or try this link again later.'         
-          : raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;       
+      const raw = err instanceof Error ? err.message : 'Analysis failed';
+      const friendly = /not a bot|Sign in to confirm|Failed to extract any player response|EXTRACTION_BLOCKED/i.test(raw)
+        ? 'YouTube blocked this video from our server (bot check). Try a non-YouTube public link, or try this link again later.'
+        : raw.length > 300 ? `${raw.slice(0, 300)}…` : raw;
       showError(friendly);
     } finally {
       setIsLoading(false);
       setTimeout(() => stopAnalyzeProgress(), 600);
     }
   };
+
   const handleReset = () => {
-      stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; readyJobRef.current = null; stopPolling(); setPreparingPercent(null); setIsDownloading(false); setDownloadReady(false); setDownloadFailMsg(null); prefetchingFormatRef.current = null;
-    if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current);
+    stopAnalyzeProgress(); setMetadata(null); setAgeConfirmed(false); setPendingAdultUrl(null); setAdultConfirmedUrl(null); pendingJobRef.current = null; setIsDownloading(false); prefetchingFormatRef.current = null; setErrorMsg(null); setToastMsg(null); if (downloadTimeoutRef.current) clearTimeout(downloadTimeoutRef.current); downloadTimeoutRef.current = null;
     if (window.location.hash === '#results') { window.history.pushState({ page: 'home' }, "", window.location.pathname); }
   };
+
   const handleFormatSelect = async (formatId: string) => {
     if (!metadata?.analysisId) return;
     if (prefetchingFormatRef.current === formatId && !pendingJobRef.current) return;
     if (pendingJobRef.current?.formatId === formatId) return;
     // Switching format frees the button (the stuck-button bug reported 2026-11-20).
-    stopPolling();
-    readyJobRef.current = null;
-    setPreparingPercent(null);
     setIsDownloading(false);
-    setDownloadReady(false);
-    setDownloadFailMsg(null);
-        prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
+    prefetchingFormatRef.current = formatId; pendingJobRef.current = null; setIsPrefetching(true);
     try {
       const { jobId, streamMode } = await startDownload(metadata.analysisId, formatId);
       if (prefetchingFormatRef.current === formatId) { pendingJobRef.current = { formatId, jobId, streamMode }; }
     } catch (err) { console.warn('[FlowFetch] Pre-fetch failed:', err); }
     finally { if (prefetchingFormatRef.current === formatId) { prefetchingFormatRef.current = null; setIsPrefetching(false); } }
-  };
-  const pollDownloadStatus = (jobId: string) => {
-      if (pollingJobRef.current === jobId) return;
-      pollingJobRef.current = jobId;
-      const startedAt = Date.now();
-      const MAX_POLL_MS = 5 * 60 * 1000;
-      pollTimerRef.current = setInterval(async () => {
-            if (Date.now() - startedAt > MAX_POLL_MS) {
-                    stopPolling();
-                    setPreparingPercent(null);
-                    setIsDownloading(false);
-                    showToast('Still preparing — tap Download again to check.');
-                    return;
-            }
-            try {
-                    const res = await getDownloadStatus(jobId);
-                    if (typeof res.percent === 'number') setPreparingPercent(res.percent);
-                    if (res.status === 'ready') {
-                      if (pendingJobRef.current?.jobId === jobId) readyJobRef.current = pendingJobRef.current;
-                              stopPolling();
-                              setPreparingPercent(null);
-                      setIsDownloading(false);
-                      setDownloadFailMsg(null);
-                      setDownloadReady(true);
-                              showToast('Ready! Click Download once more to start.');
-                    } else if (res.status === 'failed') {
-                              stopPolling();
-                              pendingJobRef.current = null;
-                              setPreparingPercent(null);
-                              setIsDownloading(false);
-                              setDownloadReady(false);
-                      const failMsg = res.reason === 'BOT_BLOCKED'
-                        ? 'YouTube blocked this video from our server (bot check). Tap Download again to retry — it often works on the next try.'
-                        : 'Download failed on the server. Tap Download again to retry.';
-                  setDownloadFailMsg(failMsg);
-                      showError('Download failed on the server. Please try again.');
-                    }
-            } catch {
-                    // Keep polling on fetch errors.
-            }
-      }, 2000);
   };
 
   const fireDownloadClick = (jobId: string, filename: string) => {
@@ -196,86 +138,127 @@ export default function App() {
     console.log('NATIVE_DOWNLOAD_TRIGGER_FIRED:', downloadUrl, filename);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = filename;
+    a.download = filename;       // respected for same-origin; ignored cross-origin
     document.body.appendChild(a);
     a.click();
     a.remove();
   };
+
+  // ---------------------------------------------------------------------------
+  // Download: called synchronously from the Download button onClick.
+  // MUST NOT be async — a.click() must fire within the same JS call frame
+  // as the user's click event to ensure Chrome treats it as a trusted gesture.
+  //
+  // v13 (2026-11-21): the download goes STRAIGHT to the browser. There is
+  // no site-side "Preparing... 0-100%" phase any more — the backend
+  // streams the file (direct for single streams, live FFmpeg merge for
+  // video+audio) and the browser's own Downloads shows the progress.
+  // So this handler has one job: fire the anchor click synchronously.
+  // ---------------------------------------------------------------------------
+
   const handleDownload = (formatId: string) => {
     if (!metadata) return;
+    // Only block while a download is actually starting. A click during
+    // prefetch is allowed: the fallback path registers the job itself, so
+    // a slow first tap never leaves the button stuck.
     if (isDownloading) return;
+
     const format = metadata.formats.find(f => f.id === formatId);
     const ext = format ? format.ext : 'mp4';
-    const resSuffix = format?.resolution && format.resolution !== 'Audio' ? ` - ${format.resolution}` : '';
+    const resSuffix = format?.resolution && format.resolution !== 'Audio'
+      ? ` - ${format.resolution}` : '';
     const filename = `${sanitizeFilename(metadata.title)}${resSuffix}.${ext}`;
-    const ready = readyJobRef.current;
-    if (ready && ready.formatId === formatId) {
-      fireDownloadClick(ready.jobId, filename);
-      readyJobRef.current = null;
-      pendingJobRef.current = null;
-      setPreparingPercent(null);
-      setDownloadReady(false);
-      setIsDownloading(true);
-      showToast("Download started - check your browser's downloads bar!");
-      downloadTimeoutRef.current = setTimeout(() => { setIsDownloading(false); }, 3_000);
-      return;
-    }
+
     const pending = pendingJobRef.current;
-    if (pending && pending.formatId === formatId && pending.streamMode === 'process_first') {
-      setIsDownloading(true);
-      showToast('Preparing your video on the server... this takes a minute for large videos.');
-      pollDownloadStatus(pending.jobId);
-      return;
-    }
+
     if (pending && pending.formatId === formatId) {
+      // Job is already registered (prefetch on format select). Fire the
+      // anchor click NOW, in this same call frame, before any async work.
+      // This guarantees Chrome counts it as a user-initiated download and
+      // does NOT suppress it. The backend sends the attachment headers
+      // immediately, so the download entry appears in Chrome Downloads
+      // at once; the file itself streams in behind it.
       fireDownloadClick(pending.jobId, filename);
-      setIsDownloading(true); showToast("Download started - check your browser's downloads bar!");
-      pendingJobRef.current = null;
-      const releaseDelay = pending.streamMode === 'process_first' ? 60_000 : 3_000;
-      downloadTimeoutRef.current = setTimeout(() => { setIsDownloading(false); }, releaseDelay);
-    } else {
-      if (!metadata.analysisId) return;
+
       setIsDownloading(true);
+      showToast('Download started — check your browser\'s downloads bar!');
+
+      // Invalidate this job slot so a fresh job is created next time
+      pendingJobRef.current = null;
+
+      // The browser opened the connection and will receive headers within
+      // seconds. After that, the download is 100% in Chrome's hands. We
+      // reset the button quickly so the user can start another download.
+      downloadTimeoutRef.current = setTimeout(() => {
+        setIsDownloading(false);
+      }, 3000);
+
+    } else {
+      // ── FALLBACK PATH ───────────────────────────────────────────────────
+      // Pre-fetch didn't complete before the user clicked Download.
+      // We must register the job NOW (async), then show a toast telling the
+      // user the job is ready so they can click once more (which will then
+      // use the synchronous path above).
+      // NOTE: We cannot fire a.click() here because we're about to await —
+      // doing so would break Chrome's gesture check.
+
+      if (!metadata.analysisId) return;
+
+      setIsDownloading(true);
+
       const FALLBACK_TIMEOUT_MS = 20_000;
-      const timeoutHandle = setTimeout(() => { setIsDownloading(false); showError('Timed out preparing download. Please try clicking Download again.'); }, FALLBACK_TIMEOUT_MS);
+      const timeoutHandle = setTimeout(() => {
+        setIsDownloading(false);
+        showError('Timed out preparing download. Please try clicking Download again.');
+      }, FALLBACK_TIMEOUT_MS);
+
       startDownload(metadata.analysisId, formatId)
-        .then(({ jobId, streamMode }) => { clearTimeout(timeoutHandle); pendingJobRef.current = { formatId, jobId, streamMode }; if (streamMode === 'process_first') { setIsDownloading(true); showToast('Preparing your video on the server... this takes a minute for large videos.'); pollDownloadStatus(jobId); } else { setIsDownloading(false); showToast('Ready! Click Download once more to start.'); } })
-        .catch(err => { clearTimeout(timeoutHandle); setIsDownloading(false); showError(err instanceof Error ? err.message : 'Failed to prepare download. Please try again.'); });
+        .then(({ jobId, streamMode }) => {
+          clearTimeout(timeoutHandle);
+          pendingJobRef.current = { formatId, jobId, streamMode };
+          setIsDownloading(false);
+          showToast('Ready! Click Download once more to start.');
+        })
+        .catch(err => {
+          clearTimeout(timeoutHandle);
+          setIsDownloading(false);
+          showError(err instanceof Error ? err.message : 'Failed to prepare download. Please try again.');
+        });
     }
   };
+
+  // Render
   return (
     <div className="app">
       <Header onLogoClick={handleReset} />
-      <main className="main-content container mb-16"> 
-        {toastMsg && (<div className="toast-ok">{toastMsg}</div>)}
-        {errorMsg && (<div className="toast-err">{errorMsg}</div>)}
+      <main className="main-content container mb-16">
+        {toastMsg && (<div className="toast">{toastMsg}</div>)}
+        {errorMsg && (<div className="error-banner" role="alert">{errorMsg}</div>)}
         {!metadata && (<Hero onAnalyze={handleAnalyze} isLoading={isLoading} analyzeProgress={analyzeProgress} analyzeStage={analyzeStage} />)}
         {pendingAdultUrl && !metadata && (
-          <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
-            <h2 className="text-2xl font-bold mb-4">Are you 18+?</h2>
-            <p className="text-muted mb-2">This link is from an adult site. This content is for adults only.</p>
-            <p className="text-muted mb-8">Please confirm that you are at least 18 years old to continue.</p>
-            <div className="flex gap-4 justify-center">
-              <button className="btn btn-outline" onClick={cancelAdult}>No, I am under 18</button>
-              <button className="btn btn-primary" onClick={confirmAdult}>Yes, I am 18 or older</button>
+          <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
+              <h2 className="text-xl font-bold mb-3">18+ content — are you 18 or older?</h2>
+              <p className="text-gray-600 text-sm mb-4">This video is from an adult site. You'll need to confirm your age before we can continue.</p>
+              <div className="flex gap-3">
+                <button onClick={confirmAdult} className="bg-[#FF4D6D] text-white px-4 py-2 rounded-lg flex-1 font-medium">I'm 18 or older — Continue</button>
+                <button onClick={cancelAdult} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg flex-1 font-medium">Cancel</button>
+              </div>
             </div>
           </div>
         )}
         {metadata && (
-          <div className="analysis-results">
+          <div id="results" className="results">
             {metadata.age_limit && metadata.age_limit >= 18 && !ageConfirmed ? (
-              <div className="card p-8 text-center max-w-lg mx-auto mt-8 bg-surface border border-white/10 rounded-xl">
-                <h2 className="text-2xl font-bold mb-4">Age Confirmation Required</h2>
-                <p className="text-muted mb-8">This content is age-restricted. Please confirm that you are at least 18 years old to proceed.</p>
-                <div className="flex gap-4 justify-center">
-                  <button className="btn btn-outline" onClick={handleReset}>Cancel</button>
-                  <button className="btn btn-primary" onClick={() => setAgeConfirmed(true)}>I am 18 or older</button>
-                </div>
+              <div className="age-gate">
+                <h2 className="text-xl font-bold mb-3">18+ content — are you 18 or older?</h2>
+                <p className="text-gray-600 text-sm mb-4">This video is marked 18+ by YouTube. Confirm your age to see the download options.</p>
+                <button onClick={() => setAgeConfirmed(true)} className="bg-[#FF4D6D] text-white px-4 py-2 rounded-lg font-medium">I'm 18 or older — Show download options</button>
               </div>
             ) : (
               <>
-                <VideoInfo metadata={metadata} onReset={handleReset} />
-                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} preparingPercent={preparingPercent} downloadReady={downloadReady} downloadFailMsg={downloadFailMsg} />
+                <VideoInfo title={metadata.title} thumbnail={metadata.thumbnail} duration={metadata.duration} uploader={metadata.uploader} site={metadata.site} description={metadata.description} onReset={handleReset} />
+                <FormatSelector formats={metadata.formats} onDownload={handleDownload} onFormatSelect={handleFormatSelect} isDownloading={isDownloading} isPrefetching={isPrefetching} />
               </>
             )}
           </div>
