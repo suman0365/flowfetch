@@ -41,6 +41,15 @@ import { attemptsFor, baseArgs } from './ytdlpArgs';
  * to stdout makes yt-dlp emit MPEG-TS mislabelled as MP4 (verified
  * 2026-11-21: first bytes 0x47 sync + "FFmpeg Service01", ffprobe
  * format_name=mpegts).
+ *
+ * v13.2 (2026-11-21): NO SIZE LIMIT. The old 2 GB MAX_FILE_SIZE was dead
+ * config — grep verified nothing in the code ever read it, so no size
+ * cap was ever actually enforced. The real caps for big files were the
+ * 9-minute per-attempt kill and the build being cancelled when the
+ * browser disconnected; both are lifted here (50-minute cap, build
+ * survives a dropped connection). Suman's rule: any size at 0 cost,
+ * slow is fine. The only remaining limits are the server's disk space
+ * and how long a build/connection can survive.
  */
 export type StreamMode = 'direct' | 'disk_build';
 
@@ -314,14 +323,16 @@ class DownloaderService extends EventEmitter {
     this.sendDownloadHeaders(job, res, false);
     this.updateProgress(id, { status: 'downloading' });
 
-    // If the browser goes away mid-build, stop the build so it does not
-    // burn the free instance's CPU/RAM for nothing.
+    // If the browser goes away mid-build (user cancelled, connection
+    // dropped on a long build), do NOT kill the build: let it finish on
+    // the server so a retry tap can stream the finished file straight
+    // away instead of rebuilding from scratch. The buildPromise is
+    // cached on the job, so a later GET for the same job reuses it.
+    // (Suman's rule, 2026-11-21: no size limit, slow is fine — a big
+    // file's build can outlast the browser connection.)
     let cancelled = false;
     res.once('close', () => {
       cancelled = true;
-      if (job.child && !job.child.killed) {
-        try { job.child.kill('SIGKILL'); } catch { /* already dead */ }
-      }
     });
 
     const result = await this.runDiskBuild(job);
@@ -413,14 +424,18 @@ class DownloaderService extends EventEmitter {
       job.child = child;
       let settled = false;
       let stderrOutput = '';
-      // Cap a single build attempt at 9 minutes so a stuck download does
-      // not hold the browser's download entry open forever.
+      // Cap a single build attempt at 50 minutes. A big file (3 GB+) at
+      // the free tier's ~2.4 MB/s takes ~20-35 min to download; the old
+      // 9-minute cap would have killed it mid-way. 50 min stays under
+      // the 1-hour downloadTimeout the cleanup job uses, so a finished
+      // file is never deleted before the user can fetch it. Suman's
+      // rule (2026-11-21): no size limit, slow is fine.
       const cap = setTimeout(() => {
         if (!settled) {
           try { if (!child.killed) child.kill('SIGKILL'); } catch { /* already dead */ }
           done(false);
         }
-      }, 9 * 60 * 1000);
+      }, 50 * 60 * 1000);
       const done = (ok: boolean) => {
         if (settled) return;
         settled = true;
