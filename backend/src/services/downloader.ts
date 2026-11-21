@@ -6,7 +6,7 @@ import { config } from '../config/env';
 import EventEmitter from 'events';
 import { NormalizedFormat } from './formatCache';
 import { attemptsFor, baseArgs } from './ytdlpArgs';
-import { downloadFailedPage from '../utils/errorPages';
+import { buildingPage, downloadFailedPage, expiredLinkPage } from '../utils/errorPages';
 
 /**
  * StreamMode — how a download job is served to the browser.
@@ -94,6 +94,9 @@ export interface Job {
   // Disk-build state (disk_build mode only).
   buildPromise?: Promise<{ ok: boolean; filePath?: string }>;
   filePath?: string;
+  // Set when a disk build finishes with failure, so a later refresh
+  // returns the failed page instead of refreshing forever.
+  buildFailed?: boolean;
 }
 
 // --------------------------------------------------------------------------
@@ -123,7 +126,7 @@ function sanitizeFilename(name: string): string {
   // Content-Disposition threw ERR_INVALID_CHAR and crashed the whole
   // server on download — verified 2026-11-20 with the Tea video title.
   // The browser still gets the real title via filename*=UTF-8'' below.
-  return name.replace(/[<>:\"/\\|?*\x00-\x1F]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim() || 'video';
+  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim() || 'video';
 }
 
 // --------------------------------------------------------------------------
@@ -196,7 +199,7 @@ class DownloaderService extends EventEmitter {
     const resolutionSuffix = format.resolution ? ` - ${format.resolution}` : '';
     const safeFilename = `${safeTitle}${resolutionSuffix}.${format.ext}`;
     // Full title (Tamil/emoji kept) for the RFC 5987 filename* value only.
-    const fullFilename = `${job.title.replace(/[<>:\"/\\|?*\x00-\x1F]/g, '').trim() || 'video'}${resolutionSuffix}.${format.ext}`;
+    const fullFilename = `${job.title.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').trim() || 'video'}${resolutionSuffix}.${format.ext}`;
 
     res.setHeader('Content-Type', contentTypeFor(format.ext));
     // Plain filename="..." must be ASCII-only (Node rejects non-Latin1
@@ -341,57 +344,66 @@ class DownloaderService extends EventEmitter {
     }
     this.markStarted(job);
 
-    // v13.3: BUILD FIRST, headers second. The size is only known once
-    // the merge finishes, so the headers (with the exact Content-Length
-    // of the built file) go out AFTER the build — that is what makes
-    // Chrome show a true 0–100% bar. One tap, no second click: the
-    // browser is still waiting on the same response the tap opened.
-    // Trade-off: nothing shows in Downloads during the build, and a
-    // very long build can outlast the connection — but the build
-    // survives on the server (v13.2) and a retry tap streams the
-    // finished file straight away.
+    // v13.6: BUILD-FIRST with a feedback page (replaces the v13.3
+    // hold-the-connection design). The old design held the response
+    // open with NOTHING sent until the merge finished, so the new tab
+    // sat blank black for minutes on a big build and Suman thought it
+    // was broken (2026-11-21, Gaming Rascal 1080p, 65 MB). Now:
+    //  - build already complete → stream the finished file at once (200).
+    //  - built file cleaned up (>1h) → expired page, tap Download again.
+    //  - build failed → friendly failed page (502), no refresh loop.
+    //  - build still running → start it in the background and return a
+    //    202 "Building your file…" page that refreshes itself every 5s.
+    //    When the build finishes, the next refresh streams the video
+    //    and it plays in the player. One tap, no second click, and the
+    //    tab is never blank. The build survives a dropped connection
+    //    (v13.2) and the buildPromise is cached, so refreshes never
+    //    rebuild from scratch. (Suman's rule: no size limit, slow is fine.)
 
-    // If the browser goes away mid-build (user cancelled, connection
-    // dropped on a long build), do NOT kill the build: let it finish on
-    // the server so a retry tap can stream the finished file instead of
-    // rebuilding from scratch. The buildPromise is cached on the job,
-    // so a later GET for the same job reuses it. (Suman's rule,
-    // 2026-11-21: no size limit, slow is fine — a big file's build can
-    // outlast the browser connection.)
-    let cancelled = false;
-    res.once('close', () => {
-      cancelled = true;
-    });
+    // Fast path: the file is already built — stream it now with the
+    // exact Content-Length, so Chrome shows a true 0–100% bar.
+    if (job.filePath && fs.existsSync(job.filePath)) {
+      const size = fs.statSync(job.filePath).size;
+      this.sendDownloadHeaders(job, res, false, size);
+      this.updateProgress(id, { status: 'downloading' });
+      const stream = fs.createReadStream(job.filePath);
+      stream.on('error', () => {
+        this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Could not read built file.' });
+        if (!res.writableEnded && !res.destroyed) res.end();
+      });
+      stream.on('end', () => {
+        this.updateProgress(id, { status: 'complete', percent: 100 });
+        if (!res.writableEnded && !res.destroyed) res.end();
+      });
+      stream.pipe(res);
+      return;
+    }
 
-    const result = await this.runDiskBuild(job);
-    if (cancelled || res.destroyed || res.writableEnded) return;
+    // The build finished but the file was cleaned up (>1h old) — the
+    // link is expired. Tell the user to tap Download again for a
+    // fresh link, instead of refreshing forever.
+    if (job.filePath && !fs.existsSync(job.filePath)) {
+      if (!res.headersSent) res.status(404).setHeader('Content-Type', 'text/html; charset=utf-8').send(expiredLinkPage());
+      else if (!res.writableEnded && !res.destroyed) res.end();
+      return;
+    }
 
-    if (!result.ok || !result.filePath || !fs.existsSync(result.filePath)) {
+    // The build already failed — show the failed page, do not loop.
+    if (job.buildFailed) {
       this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Download process failed.' });
-      // No headers have been sent yet, so a real error status is
-      // possible now — the browser shows a failed download instead of
-      // a silent 0-byte file.
       if (!res.headersSent) res.status(502).setHeader('Content-Type', 'text/html; charset=utf-8').send(downloadFailedPage());
       else if (!res.writableEnded && !res.destroyed) res.end();
       return;
     }
 
-    // Exact size of the built file → real 0–100% in the browser.
-    job.filePath = result.filePath;
-    const size = fs.statSync(result.filePath).size;
-    this.sendDownloadHeaders(job, res, false, size);
-    this.updateProgress(id, { status: 'downloading' });
-
-    const stream = fs.createReadStream(result.filePath);
-    stream.on('error', () => {
-      this.updateProgress(id, { status: 'failed', error: 'DOWNLOAD_FAILED: Could not read built file.' });
-      if (!res.writableEnded && !res.destroyed) res.end();
-    });
-    stream.on('end', () => {
-      this.updateProgress(id, { status: 'complete', percent: 100 });
-      if (!res.writableEnded && !res.destroyed) res.end();
-    });
-    stream.pipe(res);
+    // Build still running (or not started yet). Kick it off in the
+    // background (cached on the job) and return the building page.
+    // Do NOT await here — the page refreshes itself until the file
+    // is ready, then the refresh streams it via the fast path above.
+    this.runDiskBuild(job);
+    if (!res.headersSent) {
+      res.status(202).setHeader('Content-Type', 'text/html; charset=utf-8').send(buildingPage(job.title, job.format.resolution));
+    }
   }
 
   /**
@@ -403,7 +415,16 @@ class DownloaderService extends EventEmitter {
    */
   private runDiskBuild(job: Job): Promise<{ ok: boolean; filePath?: string }> {
     if (job.buildPromise) return job.buildPromise;
-    job.buildPromise = this.doDiskBuild(job);
+    // Record the outcome on the job itself when the build finishes, so
+    // a later refresh (or a second tab) can tell — without awaiting —
+    // whether the file is ready to stream or the build failed.
+    // v13.6: this is what lets the 202 building page stop refreshing
+    // and play the file (or show the failed page) instead of looping.
+    job.buildPromise = this.doDiskBuild(job).then((result) => {
+      if (result.ok && result.filePath) job.filePath = result.filePath;
+      else job.buildFailed = true;
+      return result;
+    });
     return job.buildPromise;
   }
 
