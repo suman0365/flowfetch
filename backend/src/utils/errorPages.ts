@@ -56,3 +56,38 @@ export function downloadFailedPage(): string {
     'The download failed. Go back to FlowFetch and try again.',
   ]);
 }
+
+/** The disk build is still running — show a page that auto-refreshes until the video is ready. */
+export function buildingPage(title: string, resolution?: string): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const label = esc(resolution ? `${title} — ${resolution}` : title);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="5">
+<title>Building your file — FlowFetch</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #111111; color: #ffffff; margin: 0; padding: 24px; text-align: center; }
+  .card { max-width: 480px; margin: 48px auto; background: #1e1e1e; border: 1px solid #2e2e2e; border-radius: 12px; padding: 28px 22px; }
+  h1 { font-size: 22px; margin: 0 0 14px; }
+  p { color: #cccccc; line-height: 1.6; margin: 0 0 12px; font-size: 16px; }
+  .spin { font-size: 32px; display: block; margin-bottom: 12px; animation: spin 1.5s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .file { color: #ffffff; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+<span class="spin">⏳</span>
+<h1>Building your file…</h1>
+<p class="file">${label}</p>
+<p>Video build aagitu irukku — indha page thana refresh aagum, video ready aana ingaye play aagum. Close pannaadha.</p>
+<p>Your video is being built — this page refreshes itself, and the video will play right here when it is ready. Please do not close it.</p>
+<p>Periya file na konjam neram edukkum. Aprom player la three dots (⋮) ah click panne Download pannikalam.</p>
+<p>A large file can take a few minutes. Afterwards, tap the three dots (⋮) in the player to download it.</p>
+</div>
+</body>
+</html>`;
+}
