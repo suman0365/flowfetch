@@ -244,7 +244,8 @@ export default function App() {
     console.log('NATIVE_DOWNLOAD_TRIGGER_FIRED:', downloadUrl, filename);
     const a = document.createElement('a');
     a.href = downloadUrl;
-    a.download = filename;       // respected for same-origin; ignored cross-origin
+    a.target = '_blank';
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -296,8 +297,8 @@ export default function App() {
       // 0–100% bar. A direct stream starts at once, as before.
       showToast(
         pending.streamMode === 'disk_build'
-          ? 'Building your file — it will appear in your browser\u2019s downloads when ready, with a 0–100% bar.'
-          : 'Download started — check your browser\'s downloads bar!'
+          ? 'Building your file — it will open and play in a new tab when ready. Tap the three dots (⋮) in the player to download it.'
+          : 'Opening your video in a new tab — tap the three dots (⋮) in the player to download it.'
       );
 
       // Invalidate this job slot so a fresh job is created next time
