@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { downloader } from '../services/downloader';
 import { formatCache } from '../services/formatCache';
+import { expiredLinkPage } from '../utils/errorPages';
 
 const router = Router();
 
@@ -34,7 +35,6 @@ router.post('/', async (req: Request, res: Response) => {
   }
 
   const { id: jobId, streamMode } = downloader.createJob(analysis.url, format, analysis.title);
-
   return res.json({ success: true, jobId, streamMode });
 });
 
@@ -70,7 +70,12 @@ router.get('/:jobId', async (req: Request, res: Response) => {
   const job = downloader.getJob(jobId);
 
   if (!job) {
-    return res.status(404).json({ success: false, error: 'Download not found or expired.' });
+    // v13.5: a raw JSON error here confuses the user (Suman opened an
+    // old link and saw only {"success":false,...}). Return a friendly
+    // HTML page that says the link expired and to tap Download again
+    // on the site for a fresh link.
+    res.status(404).setHeader('Content-Type', 'text/html; charset=utf-8').send(expiredLinkPage());
+    return;
   }
 
   if (job.streamMode === 'direct') {
