@@ -1,104 +1,77 @@
 import { Router, Request, Response } from 'express';
-import path from 'path';
-import fs from 'fs';
 import { downloader } from '../services/downloader';
-import { config } from '../config/env';
 import { formatCache } from '../services/formatCache';
+
 const router = Router();
+
+// ---------------------------------------------------------------------------
+// POST /api/download  –  Create a download job and return its ID + stream mode
+//
+// The job is created when the user SELECTS a format (prefetch) so the
+// Download click can fire the browser download synchronously, in the same
+// JS call frame as the tap — required to survive Chrome's gesture check.
+// This POST does NO downloading itself: the media pipeline starts when
+// the browser hits GET /api/download/:jobId, so nothing is wasted if the
+// user never taps Download.
+// ---------------------------------------------------------------------------
 router.post('/', async (req: Request, res: Response) => {
   const { analysisId, formatId } = req.body;
+
   if (!analysisId || !formatId) {
     return res.status(400).json({ success: false, error: 'analysisId and formatId are required' });
   }
+
   const analysis = formatCache.get(analysisId);
   if (!analysis) {
-    return res.status(400).json({ success: false, error: 'Analysis data expired or not found. Please analyze the URL again.' });
+    return res
+      .status(400)
+      .json({ success: false, error: 'Analysis data expired or not found. Please analyze the URL again.' });
   }
+
   const format = analysis.formats.find((f) => f.id === formatId);
   if (!format) {
     return res.status(400).json({ success: false, error: 'Invalid format selected.' });
   }
+
   const { id: jobId, streamMode } = downloader.createJob(analysis.url, format, analysis.title);
-  try {
-    if (streamMode === 'process_first') { downloader.startDiskDownload(jobId); }
-    else { await downloader.prepareStream(jobId); }
-  } catch (err: any) {
-    return res.status(400).json({ success: false, error: err.message });
-  }
+
   return res.json({ success: true, jobId, streamMode });
 });
-router.get('/status/:jobId', (req: Request, res: Response) => {
-  const job = downloader.getJob(req.params.jobId as string);
-  if (!job) return res.json({ status: 'failed' });
-    const p = job.progress;
-    const progress = { percent: p.percent || 0, downloaded: p.downloaded || '0', total: p.total || '0', speed: p.speed || '0', eta: p.eta || 'Unknown' };
-  if (job.progress.status === 'complete' && job.progress.filename) { return res.json({ status: 'ready', filename: job.progress.filename, ...progress }); }
-  if (job.progress.status === 'failed') {
-    const reason = job.progress.error?.split(':')[0] ?? 'DOWNLOAD_FAILED';
-    return res.json({ status: 'failed', reason, ...progress });
-  }
-  return res.json({ status: 'processing', ...progress });
-});
+
+// ---------------------------------------------------------------------------
+// GET /api/download/:jobId  –  Deliver the file to the browser
+//
+// IMPORTANT: This endpoint is what the browser's native download manager
+// talks to directly. Headers (Content-Disposition: attachment) are sent
+// immediately, so the download entry appears in Chrome Downloads the
+// moment the user taps Download — there is no site-side "Preparing..."
+// phase any more (v13). Once the response begins, the download is owned
+// by the browser and continues independently of the React page.
+//
+// Modes:
+//   'direct'       – Audio-only, video-only, or a progressive combined
+//                    format (YouTube 18/22). yt-dlp stdout → response.
+//                    Exact Content-Length, so Chrome shows true 0–100%.
+//   'stream_merge' – DASH video+audio. Two yt-dlp processes stream the
+//                    raw streams into FFmpeg, which muxes a fragmented
+//                    MP4 (or Matroska) to stdout → response. No
+//                    Content-Length (merged size is unknown until the
+//                    merge finishes); Chrome shows bytes counting up.
+// ---------------------------------------------------------------------------
 router.get('/:jobId', async (req: Request, res: Response) => {
   const jobId = req.params.jobId as string;
   const job = downloader.getJob(jobId);
-  if (!job) { return res.status(404).json({ success: false, error: 'Download not found or expired.' }); }
-  if (job.streamMode === 'direct' || job.streamMode === 'process_and_stream') {
+
+  if (!job) {
+    return res.status(404).json({ success: false, error: 'Download not found or expired.' });
+  }
+
+  if (job.streamMode === 'direct') {
     await downloader.startStream(jobId, res);
     return;
   }
-  if (job.progress.status !== 'complete' || !job.progress.filename) {
-    if (job.progress.status === 'failed') { return res.status(400).json({ success: false, error: 'File download failed on server.' }); }
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const onProgress = (prog: any) => {
-          if (prog.status === 'complete') { downloader.removeListener(`progress:${jobId}`, onProgress); resolve(); }
-          else if (prog.status === 'failed') { downloader.removeListener(`progress:${jobId}`, onProgress); reject(new Error('Download failed on server.')); }
-        };
-        downloader.on(`progress:${jobId}`, onProgress);
-        req.on('close', () => { downloader.removeListener(`progress:${jobId}`, onProgress); });
-      });
-    } catch (err: any) {
-      if (!res.headersSent) { return res.status(500).json({ success: false, error: err.message }); }
-      return;
-    }
-  }
-  if (!job.progress.filename) { return res.status(400).json({ success: false, error: 'File is not ready yet.' }); }
-  const filePath = path.join(config.tempDir, 'files', job.progress.filename);
-  if (!fs.existsSync(filePath)) { return res.status(404).json({ success: false, error: 'File no longer exists on the server.' }); }
-  let stat;
-  try { stat = fs.statSync(filePath); } catch (err: any) { console.error(`[FlowFetch] Error stating file ${filePath}:`, err.message); return res.status(500).json({ success: false, error: 'Failed to read completed file size on server.' }); }
-  if (stat.size === 0) { return res.status(500).json({ success: false, error: 'Extraction failed: Downloaded file is 0 bytes (blocked by source).' }); }
-  const fileSize = stat.size;
-  const rangeHeader = req.headers.range;
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Cache-Control', 'no-store');
-  const sanitizeFilename = (name: string) => name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim() || 'video';
-  const safeTitle = sanitizeFilename(job.title);
-  const resSuffix = job.format.resolution ? ` - ${job.format.resolution}` : '';
-  const safeFilename = `${safeTitle}${resSuffix}.${job.format.ext}`;
-  const ext = job.format.ext || 'mp4';
-  const mimeTypes: Record<string, string> = { mp4: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska', m4a: 'audio/mp4', mp3: 'audio/mpeg', ogg: 'audio/ogg', opus: 'audio/opus', flac: 'audio/flac', wav: 'audio/wav' };
-  const contentType = mimeTypes[ext] || 'application/octet-stream';
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`);
-  if (rangeHeader) {
-    const [startStr, endStr] = rangeHeader.replace(/bytes=/, '').split('-');
-    const start = parseInt(startStr, 10);
-    const end = endStr ? parseInt(endStr, 10) : fileSize - 1;
-    const chunkSize = end - start + 1;
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
-    res.setHeader('Content-Length', chunkSize);
-    res.status(206);
-    const fileStream = fs.createReadStream(filePath, { start, end });
-    fileStream.on('error', (err) => { console.error('[FlowFetch] Range stream error:', err); if (!res.writableEnded) res.end(); });
-    fileStream.pipe(res);
-  } else {
-    res.setHeader('Content-Length', fileSize);
-    res.status(200);
-    const fileStream = fs.createReadStream(filePath);
-    fileStream.on('error', (err) => { console.error('[FlowFetch] File stream error:', err); if (!res.writableEnded) res.end(); });
-    fileStream.pipe(res);
-  }
+
+  await downloader.startMergeStream(jobId, res);
 });
+
 export default router;
