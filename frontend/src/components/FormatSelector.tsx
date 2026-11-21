@@ -8,13 +8,7 @@ interface FormatSelectorProps {
   onFormatSelect: (formatId: string) => void;
   isDownloading: boolean;
   isPrefetching: boolean;
-  preparingPercent?: number | null;
-  // Shown right above the Download button: the file-ready / failure
-  // banner must live HERE, next to the button, not only as a toast at
-  // the top of the page (2026-11-21: Suman never saw the top toast
-  // while scrolled down here, so his ready file never got downloaded).
-  downloadReady?: boolean;
-downloadFailMsg?: string | null;}
+}
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return 'Size unavailable';
@@ -25,6 +19,8 @@ const formatBytes = (bytes?: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
+// Quality label from the resolution, so the list reads like a real
+// downloader instead of a wall of numbers.
 const qualityTag = (f: NormalizedFormat) => {
   if (f.type === 'audio') return 'Audio';
   const h = parseInt(f.resolution.replace('p', '')) || 0;
@@ -40,9 +36,6 @@ export function FormatSelector({
   onFormatSelect,
   isDownloading,
   isPrefetching,
-  preparingPercent,
-  downloadReady,
-  downloadFailMsg,
 }: FormatSelectorProps) {
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
 
@@ -50,6 +43,7 @@ export function FormatSelector({
   const videoOnly = formats.filter(f => f.type === 'video');
   const audioOnly = formats.filter(f => f.type === 'audio');
 
+  // The 720p combined row is the sensible default for most phones.
   const bestRowId = videoAndAudio.find(f => f.resolution === '720p')?.id
     ?? videoAndAudio[Math.floor(videoAndAudio.length / 2)]?.id;
 
@@ -76,7 +70,7 @@ export function FormatSelector({
                 className={`format-row ${isSelected ? 'selected' : ''}`}
                 onClick={() => {
                   setSelectedFormat(f.id);
-                  onFormatSelect(f.id);
+                  onFormatSelect(f.id); // triggers eager job pre-creation
                 }}
               >
                 <span className="format-radio" />
@@ -96,14 +90,15 @@ export function FormatSelector({
     );
   };
 
-  const buttonLabel = downloadReady
-  ? 'Download your file'
-    : isDownloading && preparingPercent != null
-  ? `Preparing... ${preparingPercent}%`
-    : isDownloading
-  ? 'Starting Download...'
+  // The button stays enabled while a format is registering, so a slow
+  // first tap never leaves the user stuck: the click falls through to
+  // the fallback path and registers the job itself.
+  // v13: the tap fires the browser download straight away — there is no
+  // site-side "Preparing..." phase any more.
+  const buttonLabel = isDownloading
+    ? 'Starting Download...'
     : isPrefetching
-  ? 'Preparing...'
+    ? 'Preparing...'
     : 'Download file';
 
   return (
@@ -115,16 +110,6 @@ export function FormatSelector({
       {renderFormatList(videoOnly, 'Video Only', <MonitorPlay size={20} />)}
 
       <div className="download-action text-center mt-8">
-        {downloadReady && (
-      <div className="toast-ok" role="status">
-      Your file is ready — tap Download file to save it to your phone.
-        </div>
-    )}
-        {downloadFailMsg && (
-      <div className="toast-err" role="alert">
-        {downloadFailMsg}
-        </div>
-    )}
         <button
           className="btn btn-primary download-btn"
           disabled={!selectedFormat || isDownloading}
@@ -141,14 +126,9 @@ export function FormatSelector({
             Registering format with server... First tap after a while can take ~30 seconds — the free server wakes up. You can tap Download file anyway.
           </p>
         )}
-        {isDownloading && preparingPercent != null && (
+        {isDownloading && (
           <p className="text-muted text-sm mt-3">
-            Building your file on the server: {preparingPercent}% — please wait, the button frees up when it is ready.
-          </p>
-        )}
-        {isDownloading && preparingPercent == null && (
-          <p className="text-muted text-sm mt-3">
-            Preparing your file on the server... tap another format to switch, or wait for it to be ready.
+            Your download has started — check your browser's downloads bar.
           </p>
         )}
       </div>
