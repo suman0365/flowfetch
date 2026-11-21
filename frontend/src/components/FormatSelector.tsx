@@ -62,25 +62,30 @@ export function FormatSelector({
           {list.map((f) => {
             const isSelected = selectedFormat === f.id;
             const isBest = f.id === bestRowId;
-
             return (
               <button
                 key={f.id}
                 type="button"
-                className={`format-row ${isSelected ? 'selected' : ''}`}
                 onClick={() => {
                   setSelectedFormat(f.id);
-                  onFormatSelect(f.id); // triggers eager job pre-creation
+                  onFormatSelect(f.id);
                 }}
+                className={`format-row ${isSelected ? 'selected' : ''} ${isBest ? 'best' : ''}`}
+                aria-pressed={isSelected}
               >
-                <span className="format-radio" />
-                <span className="format-res">{f.resolution}</span>
-                <span className="quality-tag">{qualityTag(f)}</span>
-                {isBest && <span className="best-tag">Best for most phones</span>}
-                <span className="format-ext">{f.ext.toUpperCase()}</span>
-                <span className="format-size">
-                  {formatBytes(f.filesize)}
-                  {f.fps ? ` · ${f.fps}fps` : ''}
+                <span className="format-info">
+                  <span className="format-label">
+                    {f.type === 'audio' ? 'Audio only' : `${qualityTag(f)} · ${f.resolution}`}
+                    {f.type === 'video+audio' && f.fps ? ` · ${f.fps}fps` : ''}
+                    {isBest && <span className="best-badge">Best for phone</span>}
+                  </span>
+                  <span className="format-sub">
+                    {formatBytes(f.filesize)}
+                    {f.note ? ` · ${f.note}` : ''}
+                  </span>
+                </span>
+                <span className="format-check" aria-hidden="true">
+                  {isSelected ? '✓' : ''}
                 </span>
               </button>
             );
@@ -90,47 +95,44 @@ export function FormatSelector({
     );
   };
 
-  // The button stays enabled while a format is registering, so a slow
-  // first tap never leaves the user stuck: the click falls through to
-  // the fallback path and registers the job itself.
-  // v13: the tap fires the browser download straight away — there is no
-  // site-side "Preparing..." phase any more.
+  const handleDownloadClick = () => {
+    if (!selectedFormat) return;
+    onDownload(selectedFormat);
+  };
+
+  // v13.6: the button is DISABLED while a format is registering
+  // (isPrefetching). Before this, the button stayed enabled and a tap
+  // before the job was ready fell through to the fallback path, which
+  // only registered the job and showed "Ready! Click Download once
+  // more" — so tap 1 silently did nothing and tap 2 was needed.
+  // Now one tap always fires the download, because the button only
+  // becomes tappable once the job is ready. If the prefetch fails
+  // (backend down), the button re-enables and the tap retries.
   const buttonLabel = isDownloading
-    ? 'Starting Download...'
+    ? 'Opening download…'
     : isPrefetching
-    ? 'Preparing...'
-    : 'Download file';
+      ? 'Preparing…'
+      : 'Download file';
 
   return (
-    <div className="format-selector mt-8">
-      <h2 className="text-center mb-8 text-2xl font-semibold">Choose a quality</h2>
-
-      {renderFormatList(videoAndAudio, 'Video + Audio', <Film size={20} />)}
-      {renderFormatList(audioOnly, 'Audio Only', <Music size={20} />)}
-      {renderFormatList(videoOnly, 'Video Only', <MonitorPlay size={20} />)}
-
-      <div className="download-action text-center mt-8">
+    <div className="format-selector">
+      <div className="format-groups">
+        {renderFormatList(videoAndAudio, 'Video + Audio', <MonitorPlay className="h-4 w-4" />)}
+        {renderFormatList(videoOnly, 'Video only', <Film className="h-4 w-4" />)}
+        {renderFormatList(audioOnly, 'Audio only', <Music className="h-4 w-4" />)}
+      </div>
+      <div className="sticky bottom-0 z-10 border-t border-border bg-background/95 py-3 backdrop-blur">
         <button
-          className="btn btn-primary download-btn"
-          disabled={!selectedFormat || isDownloading}
-          onClick={() => selectedFormat && onDownload(selectedFormat)}
+          type="button"
+          onClick={handleDownloadClick}
+          disabled={!selectedFormat || isDownloading || isPrefetching}
+          className="download-btn"
         >
-          {(isDownloading || isPrefetching)
-            ? <Loader2 size={20} className="mr-2 animate-spin" />
-            : <Download size={20} className="mr-2" />
-          }
+          {isDownloading || isPrefetching ? <Loader2 className="h-5 w-5 animate-spin" /> : <Download className="h-5 w-5" />}
           {buttonLabel}
         </button>
-        {isPrefetching && (
-          <p className="text-muted text-sm mt-3">
-            Registering format with server... First tap after a while can take ~30 seconds — the free server wakes up. You can tap Download file anyway.
-          </p>
-        )}
-        {isDownloading && (
-          <p className="text-muted text-sm mt-3">
-            Your download has started — check your browser's downloads bar.
-          </p>
-        )}
+        {isPrefetching && !isDownloading && <p className="mt-1 text-xs text-muted-foreground">Preparing your download — please wait a moment. The free server can take ~30 seconds to wake up.</p>}
+        {isDownloading && <p className="mt-1 text-xs text-muted-foreground">Your video is opening in a new tab — tap the three dots (⋮) in the player to download it.</p>}
       </div>
     </div>
   );
