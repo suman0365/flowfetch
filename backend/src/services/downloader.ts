@@ -348,9 +348,13 @@ class DownloaderService extends EventEmitter {
             return;
           }
           console.error(`[FlowFetch] Disk job ${id} failed:`, stderrOutput);
+          const isBotBlock = /not a bot|Sign in to confirm/i.test(stderrOutput);
+          
           this.updateProgress(id, {
             status: 'failed',
-            error: 'DOWNLOAD_FAILED: Download process failed.',
+            error: isBotBlock
+            ? 'BOT_BLOCKED: YouTube blocked this video (bot check).'
+              : 'DOWNLOAD_FAILED: Download process failed.',
           });
         }
       });
