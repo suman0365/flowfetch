@@ -9,7 +9,12 @@ interface FormatSelectorProps {
   isDownloading: boolean;
   isPrefetching: boolean;
   preparingPercent?: number | null;
-}
+  // Shown right above the Download button: the file-ready / failure
+  // banner must live HERE, next to the button, not only as a toast at
+  // the top of the page (2026-11-21: Suman never saw the top toast
+  // while scrolled down here, so his ready file never got downloaded).
+  downloadReady?: boolean;
+downloadFailMsg?: string | null;}
 
 const formatBytes = (bytes?: number) => {
   if (!bytes) return 'Size unavailable';
@@ -36,6 +41,8 @@ export function FormatSelector({
   isDownloading,
   isPrefetching,
   preparingPercent,
+  downloadReady,
+  downloadFailMsg,
 }: FormatSelectorProps) {
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
 
@@ -89,12 +96,14 @@ export function FormatSelector({
     );
   };
 
-  const buttonLabel = isDownloading && preparingPercent != null
-    ? `Preparing... ${preparingPercent}%`
+  const buttonLabel = downloadReady
+  ? 'Download your file'
+    : isDownloading && preparingPercent != null
+  ? `Preparing... ${preparingPercent}%`
     : isDownloading
-    ? 'Starting Download...'
+  ? 'Starting Download...'
     : isPrefetching
-    ? 'Preparing...'
+  ? 'Preparing...'
     : 'Download file';
 
   return (
@@ -106,6 +115,16 @@ export function FormatSelector({
       {renderFormatList(videoOnly, 'Video Only', <MonitorPlay size={20} />)}
 
       <div className="download-action text-center mt-8">
+        {downloadReady && (
+      <div className="toast-ok" role="status">
+      Your file is ready — tap Download file to save it to your phone.
+        </div>
+    )}
+        {downloadFailMsg && (
+      <div className="toast-err" role="alert">
+        {downloadFailMsg}
+        </div>
+    )}
         <button
           className="btn btn-primary download-btn"
           disabled={!selectedFormat || isDownloading}
