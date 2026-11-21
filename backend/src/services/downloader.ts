@@ -6,6 +6,7 @@ import { config } from '../config/env';
 import EventEmitter from 'events';
 import { NormalizedFormat } from './formatCache';
 import { attemptsFor, baseArgs } from './ytdlpArgs';
+import { downloadFailedPage from '../utils/errorPages';
 
 /**
  * StreamMode — how a download job is served to the browser.
@@ -370,7 +371,7 @@ class DownloaderService extends EventEmitter {
       // No headers have been sent yet, so a real error status is
       // possible now — the browser shows a failed download instead of
       // a silent 0-byte file.
-      if (!res.headersSent) res.status(502).json({ success: false, error: 'Download failed. Please try again.' });
+      if (!res.headersSent) res.status(502).setHeader('Content-Type', 'text/html; charset=utf-8').send(downloadFailedPage());
       else if (!res.writableEnded && !res.destroyed) res.end();
       return;
     }
